@@ -8,6 +8,11 @@ const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 dotenv.config();
 
+if (!process.env.JWT_SECRET) {
+  console.error('[FATAL] JWT_SECRET is not configured.');
+  process.exit(1);
+}
+
 connectDB();
 
 const app = express();
