@@ -30,6 +30,10 @@ const residentSchema = mongoose.Schema(
       type: String,
       required: true,
     },
+    address: {
+      type: String,
+      default: '',
+    },
     profileImage: {
       type: String,
       default: '',

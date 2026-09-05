@@ -6,6 +6,7 @@ const generateToken = require('../utils/generateToken');
 const { generateResidentId, generateRegistrationId, generateOTP } = require('../utils/generateId');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/emailServices');
 const { logInfo, logError } = require('../utils/logger');
+const { uploadImage } = require('../services/cloudinaryService');
 
 const OTP_EXPIRY_MS = 5 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
@@ -300,6 +301,7 @@ const loginResident = async (req, res, next) => {
           lastName: resident.lastName,
           username: resident.username,
           email: resident.email,
+          address: resident.address,
           profileImage: resident.profileImage,
         },
       });
@@ -321,7 +323,86 @@ const getResidentProfile = async (req, res, next) => {
     const resident = await Resident.findById(req.resident._id).select('-password');
 
     if (resident) {
-      res.json(resident);
+      res.json({
+        success: true,
+        resident: {
+          residentId: resident.residentId,
+          firstName: resident.firstName,
+          lastName: resident.lastName,
+          username: resident.username,
+          email: resident.email,
+          address: resident.address,
+          profileImage: resident.profileImage,
+        }
+      });
+    } else {
+      res.status(404);
+      throw new Error('Resident not found');
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Update resident profile
+// @route   PATCH /api/auth/profile
+// @access  Private
+const updateProfile = async (req, res, next) => {
+  const { firstName, lastName, email, address } = req.body;
+
+  try {
+    const resident = await Resident.findById(req.resident._id);
+
+    if (resident) {
+      resident.firstName = firstName || resident.firstName;
+      resident.lastName = lastName || resident.lastName;
+      resident.email = email || resident.email;
+      resident.address = address || resident.address;
+
+      const updatedResident = await resident.save();
+
+      res.json({
+        success: true,
+        resident: {
+          residentId: updatedResident.residentId,
+          firstName: updatedResident.firstName,
+          lastName: updatedResident.lastName,
+          username: updatedResident.username,
+          email: updatedResident.email,
+          address: updatedResident.address,
+          profileImage: updatedResident.profileImage,
+        },
+      });
+    } else {
+      res.status(404);
+      throw new Error('Resident not found');
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Update resident profile image
+// @route   PATCH /api/auth/profile/image
+// @access  Private
+const updateProfileImage = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      res.status(400);
+      throw new Error('Please upload an image');
+    }
+
+    const result = await uploadImage(req.file.buffer, 'ecowatch/profiles');
+
+    const resident = await Resident.findById(req.resident._id);
+    if (resident) {
+      resident.profileImage = result.secure_url;
+      await resident.save();
+
+      res.json({
+        success: true,
+        profileImage: result.secure_url,
+      });
     } else {
       res.status(404);
       throw new Error('Resident not found');
@@ -339,4 +420,6 @@ module.exports = {
   resetPassword,
   loginResident,
   getResidentProfile,
+  updateProfile,
+  updateProfileImage,
 };
