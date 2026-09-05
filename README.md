@@ -16,7 +16,9 @@ The production-ready backend for the EcoWatch ecosystem.
 2. Fill in the required environment variables:
    - `MONGODB_URI`
    - `JWT_SECRET`
-   - `EMAIL_PASS` (Gmail App Password)
+   - `EMAIL_PROVIDER=resend`
+   - `RESEND_API_KEY`
+   - `EMAIL_FROM=kheyronsaliga@aclcbukidnon.com` (verified Resend domain)
    - `CLOUDINARY_*` credentials
 3. Run `npm install`
 4. Run `npm run dev` to start in development mode.

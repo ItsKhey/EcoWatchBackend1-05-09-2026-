@@ -1,10 +1,19 @@
 const bcrypt = require('bcryptjs');
 const Resident = require('../models/Resident');
 const PendingRegistration = require('../models/PendingRegistration');
+const PasswordResetOTP = require('../models/PasswordResetOTP');
 const generateToken = require('../utils/generateToken');
 const { generateResidentId, generateRegistrationId, generateOTP } = require('../utils/generateId');
-const sendEmail = require('../utils/sendEmail');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/emailServices');
 const { logInfo, logError } = require('../utils/logger');
+
+const OTP_EXPIRY_MS = 5 * 60 * 1000;
+const MAX_OTP_ATTEMPTS = 5;
+
+const hashOtp = async (otp) => {
+  const salt = await bcrypt.genSalt(10);
+  return bcrypt.hash(otp, salt);
+};
 
 // @desc    Register a new resident (Step 1: Create pending & send OTP)
 // @route   POST /api/auth/register
@@ -16,18 +25,14 @@ const registerResident = async (req, res, next) => {
     logInfo(req.requestId, 'AUTH', `Registration attempt for username: ${username}`);
 
     const userExists = await Resident.findOne({ username });
-
     if (userExists) {
       res.status(400);
       throw new Error('Username is already taken');
     }
 
-    const otp = generateOTP();
+    const otp = generateOTP(4);
     const registrationId = generateRegistrationId();
-
-    // Hash OTP before storing (optional but safer)
-    const salt = await bcrypt.genSalt(10);
-    const hashedOtp = await bcrypt.hash(otp, salt);
+    const hashedOtp = await hashOtp(otp);
 
     const pending = await PendingRegistration.create({
       registrationId,
@@ -35,25 +40,19 @@ const registerResident = async (req, res, next) => {
       lastName,
       username,
       email,
-      password, // Password will be hashed by Resident model pre-save hook
+      password,
       otp: hashedOtp,
-      otpExpires: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
+      otpExpires: new Date(Date.now() + OTP_EXPIRY_MS),
+      attempts: 0,
     });
 
     logInfo(req.requestId, 'AUTH', `Pending registration created: ${registrationId}`);
 
-    // Send OTP Email
     try {
-      await sendEmail({
-        requestId: req.requestId,
-        email: email,
-        subject: 'EcoWatch - Registration OTP',
-        message: `Your OTP for EcoWatch registration is: ${otp}. It expires in 10 minutes.`,
-        html: `<h3>Welcome to EcoWatch</h3><p>Your OTP for registration is:</p><h1>${otp}</h1><p>It expires in 10 minutes.</p>`,
-      });
-      logInfo(req.requestId, 'EMAIL', `OTP sent to ${email}`);
+      await sendVerificationEmail(email, otp, req.requestId);
+      logInfo(req.requestId, 'EMAIL', `Verification OTP sent to ${email}`);
     } catch (err) {
-      logError(req.requestId, 'EMAIL', err.message);
+      logError(req.requestId, 'EMAIL', err.message || 'Verification email send failed');
       await PendingRegistration.deleteOne({ registrationId });
       res.status(500);
       throw new Error('Email could not be sent');
@@ -86,6 +85,7 @@ const verifyOTP = async (req, res, next) => {
     }
 
     if (pending.otpExpires < Date.now()) {
+      await pending.deleteOne();
       res.status(400);
       throw new Error('OTP has expired');
     }
@@ -96,7 +96,7 @@ const verifyOTP = async (req, res, next) => {
       pending.attempts += 1;
       await pending.save();
 
-      if (pending.attempts >= 5) {
+      if (pending.attempts >= MAX_OTP_ATTEMPTS) {
         await pending.deleteOne();
         res.status(400);
         throw new Error('Too many failed attempts. Please register again.');
@@ -106,25 +106,173 @@ const verifyOTP = async (req, res, next) => {
       throw new Error('Invalid OTP');
     }
 
-    // Create real Resident
     const resident = await Resident.create({
       residentId: generateResidentId(),
       firstName: pending.firstName,
       lastName: pending.lastName,
       username: pending.username,
       email: pending.email,
-      password: pending.password, // Pre-save hook will hash this
+      password: pending.password,
     });
 
     logInfo(req.requestId, 'AUTH', `Resident created: ${resident.residentId}`);
 
-    // Delete pending registration
     await pending.deleteOne();
 
     res.status(201).json({
       success: true,
       residentId: resident.residentId,
       message: 'Account verified and created successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const forgotPassword = async (req, res, next) => {
+  const { email } = req.body;
+
+  try {
+    if (!email) {
+      res.status(400);
+      throw new Error('Email is required');
+    }
+
+    const resident = await Resident.findOne({ email });
+    const targetEmail = resident ? resident.email : email;
+    const otp = generateOTP(4);
+    const otpHash = await hashOtp(otp);
+
+    await PasswordResetOTP.deleteMany({ email: targetEmail });
+
+    const resetEntry = await PasswordResetOTP.create({
+      userId: resident ? resident._id : null,
+      email: targetEmail,
+      otpHash,
+      otpExpires: new Date(Date.now() + OTP_EXPIRY_MS),
+      attempts: 0,
+    });
+
+    try {
+      await sendPasswordResetEmail(targetEmail, otp, req.requestId);
+      logInfo(req.requestId, 'EMAIL', `Password reset OTP sent to ${targetEmail}`);
+    } catch (err) {
+      logError(req.requestId, 'EMAIL', err.message || 'Password reset email send failed');
+      await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+      res.status(500);
+      throw new Error('Unable to send password reset code');
+    }
+
+    res.json({
+      success: true,
+      message: 'If an account exists for this email, a reset code has been sent.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const verifyResetOTP = async (req, res, next) => {
+  const { email, otp } = req.body;
+
+  try {
+    if (!email || !otp) {
+      res.status(400);
+      throw new Error('Email and OTP are required');
+    }
+
+    const resetEntry = await PasswordResetOTP.findOne({ email });
+
+    if (!resetEntry) {
+      res.status(400);
+      throw new Error('Invalid or expired OTP');
+    }
+
+    if (resetEntry.otpExpires < Date.now()) {
+      await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+      res.status(400);
+      throw new Error('Invalid or expired OTP');
+    }
+
+    const isMatch = await bcrypt.compare(otp, resetEntry.otpHash);
+
+    if (!isMatch) {
+      resetEntry.attempts += 1;
+      await resetEntry.save();
+
+      if (resetEntry.attempts >= MAX_OTP_ATTEMPTS) {
+        await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+        res.status(400);
+        throw new Error('Too many failed attempts. Please request a new reset code.');
+      }
+
+      res.status(400);
+      throw new Error('Invalid or expired OTP');
+    }
+
+    await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+
+    res.json({
+      success: true,
+      message: 'OTP verified successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const resetPassword = async (req, res, next) => {
+  const { email, otp, password } = req.body;
+
+  try {
+    if (!email || !otp || !password) {
+      res.status(400);
+      throw new Error('Email, OTP, and password are required');
+    }
+
+    const resetEntry = await PasswordResetOTP.findOne({ email });
+
+    if (!resetEntry) {
+      res.status(400);
+      throw new Error('Invalid or expired OTP');
+    }
+
+    if (resetEntry.otpExpires < Date.now()) {
+      await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+      res.status(400);
+      throw new Error('Invalid or expired OTP');
+    }
+
+    const isMatch = await bcrypt.compare(otp, resetEntry.otpHash);
+
+    if (!isMatch) {
+      resetEntry.attempts += 1;
+      await resetEntry.save();
+
+      if (resetEntry.attempts >= MAX_OTP_ATTEMPTS) {
+        await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+        res.status(400);
+        throw new Error('Too many failed attempts. Please request a new reset code.');
+      }
+
+      res.status(400);
+      throw new Error('Invalid or expired OTP');
+    }
+
+    const resident = await Resident.findOne({ email });
+    if (!resident) {
+      await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+      res.status(400);
+      throw new Error('Invalid or expired OTP');
+    }
+
+    resident.password = password;
+    await resident.save();
+    await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully',
     });
   } catch (error) {
     next(error);
@@ -186,6 +334,9 @@ const getResidentProfile = async (req, res, next) => {
 module.exports = {
   registerResident,
   verifyOTP,
+  forgotPassword,
+  verifyResetOTP,
+  resetPassword,
   loginResident,
   getResidentProfile,
 };

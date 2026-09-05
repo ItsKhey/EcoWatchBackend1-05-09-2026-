@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { customAlphabet } = require('nanoid');
 
 const generateResidentId = () => {
@@ -15,9 +16,10 @@ const generateRegistrationId = () => {
   return `REG-${nanoid()}`;
 };
 
-const generateOTP = () => {
-  const nanoid = customAlphabet('0123456789', 4);
-  return nanoid();
+const generateOTP = (length = 4) => {
+  const min = 10 ** (length - 1);
+  const max = 10 ** length - 1;
+  return crypto.randomInt(min, max + 1).toString().padStart(length, '0');
 };
 
 module.exports = { generateResidentId, generateReportId, generateRegistrationId, generateOTP };
