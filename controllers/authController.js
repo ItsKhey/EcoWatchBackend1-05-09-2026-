@@ -53,6 +53,7 @@ const registerResident = async (req, res, next) => {
       logInfo(req.requestId, 'EMAIL', `OTP sent to ${email}`);
     } catch (err) {
       logError(req.requestId, 'EMAIL', err.message);
+      await PendingRegistration.deleteOne({ registrationId });
       res.status(500);
       throw new Error('Email could not be sent');
     }
