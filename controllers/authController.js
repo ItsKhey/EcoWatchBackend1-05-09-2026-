@@ -45,6 +45,7 @@ const registerResident = async (req, res, next) => {
     // Send OTP Email
     try {
       await sendEmail({
+        requestId: req.requestId,
         email: email,
         subject: 'EcoWatch - Registration OTP',
         message: `Your OTP for EcoWatch registration is: ${otp}. It expires in 10 minutes.`,
