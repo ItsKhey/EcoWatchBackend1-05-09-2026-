@@ -1,7 +1,6 @@
 const Report = require('../models/Report');
 const { generateReportId } = require('../utils/generateId');
-const cloudinary = require('../config/cloudinary');
-const fs = require('fs');
+const { uploadImage } = require('../services/cloudinaryService');
 const { logInfo, logError } = require('../utils/logger');
 
 // @desc    Create a new report
@@ -20,15 +19,10 @@ const createReport = async (req, res, next) => {
 
     logInfo(req.requestId, 'IMAGE', 'Starting upload to Cloudinary');
 
-    // Upload image to Cloudinary
-    const result = await cloudinary.uploader.upload(req.file.path, {
-      folder: 'ecowatch/reports',
-    });
+    // Upload image to Cloudinary using buffer
+    const result = await uploadImage(req.file.buffer, 'ecowatch/reports');
 
     logInfo(req.requestId, 'IMAGE', `Upload completed: ${result.secure_url}`);
-
-    // Remove file from local uploads folder
-    fs.unlinkSync(req.file.path);
 
     const report = await Report.create({
       reportId: generateReportId(),
