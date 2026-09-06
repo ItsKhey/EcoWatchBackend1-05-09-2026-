@@ -7,7 +7,12 @@ const { logInfo, logError } = require('../utils/logger');
 // @route   POST /api/reports
 // @access  Private
 const createReport = async (req, res, next) => {
-  const { category, description, latitude, longitude } = req.body;
+  const {
+  title,
+  category,
+  description,
+  latitude,
+  longitude} = req.body;
 
   try {
     logInfo(req.requestId, 'REPORT', `New report submission from resident: ${req.resident.residentId}`);
@@ -25,15 +30,16 @@ const createReport = async (req, res, next) => {
     logInfo(req.requestId, 'IMAGE', `Upload completed: ${result.secure_url}`);
 
     const report = await Report.create({
-      reportId: generateReportId(),
-      residentId: req.resident.residentId,
-      category,
-      description,
-      latitude,
-      longitude,
-      imageUrl: result.secure_url,
-    });
-
+    reportId: generateReportId(),
+    residentId: req.resident.residentId,
+    title: title.trim(),
+    category: category.trim(),
+    description: description.trim(),
+    latitude: Number(latitude),
+    longitude: Number(longitude),
+    imageUrl: result.secure_url
+    }); 
+    
     logInfo(req.requestId, 'DATABASE', `Report created: ${report.reportId}`);
 
     res.status(201).json(report);

@@ -7,31 +7,46 @@ const reportSchema = mongoose.Schema(
       required: true,
       unique: true,
     },
+
     residentId: {
       type: String,
       required: true,
       ref: 'Resident',
     },
+
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
     category: {
       type: String,
       required: true,
+      trim: true,
     },
+
     description: {
       type: String,
       required: true,
+      trim: true,
     },
+
     latitude: {
       type: Number,
       required: true,
     },
+
     longitude: {
       type: Number,
       required: true,
     },
+
     imageUrl: {
       type: String,
       required: true,
     },
+
     status: {
       type: String,
       required: true,
