@@ -357,7 +357,9 @@ const updateProfile = async (req, res, next) => {
       resident.firstName = firstName || resident.firstName;
       resident.lastName = lastName || resident.lastName;
       resident.email = email || resident.email;
-      resident.address = address || resident.address;
+      if (address !== undefined) {
+        resident.address = address;
+      }
 
       const updatedResident = await resident.save();
 
