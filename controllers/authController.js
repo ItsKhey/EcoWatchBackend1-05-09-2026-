@@ -5,7 +5,7 @@ const PasswordResetOTP = require('../models/PasswordResetOTP');
 const generateToken = require('../utils/generateToken');
 const { generateResidentId, generateRegistrationId, generateOTP } = require('../utils/generateId');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/emailServices');
-const { logInfo, logError } = require('../utils/logger');
+const { logInfo, logError, logProfileRequest } = require('../utils/logger');
 const { uploadImage } = require('../services/cloudinaryService');
 
 const OTP_EXPIRY_MS = 5 * 60 * 1000;
@@ -349,6 +349,7 @@ const getResidentProfile = async (req, res, next) => {
 // @access  Private
 const updateProfile = async (req, res, next) => {
   const { firstName, lastName, email, address } = req.body;
+  logProfileRequest(req, `controllerReached=true requestBodyFields=${Object.keys(req.body).join(',') || 'none'}`);
 
   try {
     const resident = await Resident.findById(req.resident._id);
@@ -361,7 +362,9 @@ const updateProfile = async (req, res, next) => {
         resident.address = address;
       }
 
+      logProfileRequest(req, 'mongodbUpdateStarted=true');
       const updatedResident = await resident.save();
+      logProfileRequest(req, 'mongodbUpdateResult=success');
 
       res.json({
         success: true,
@@ -380,6 +383,7 @@ const updateProfile = async (req, res, next) => {
       throw new Error('Resident not found');
     }
   } catch (error) {
+    logProfileRequest(req, `mongodbUpdateResult=failure error=${error.name || 'UpdateError'}`);
     return next(error);
   }
 };
@@ -388,18 +392,24 @@ const updateProfile = async (req, res, next) => {
 // @route   PATCH /api/auth/profile/image
 // @access  Private
 const updateProfileImage = async (req, res, next) => {
+  logProfileRequest(req, `controllerReached=true multipartFilePresent=${Boolean(req.file)}`);
+
   try {
     if (!req.file) {
       res.status(400);
       throw new Error('Please upload an image');
     }
 
+    logProfileRequest(req, 'cloudinaryUploadStarted=true');
     const result = await uploadImage(req.file.buffer, 'ecowatch/profiles');
+    logProfileRequest(req, 'cloudinaryUploadResult=success');
 
     const resident = await Resident.findById(req.resident._id);
     if (resident) {
       resident.profileImage = result.secure_url;
+      logProfileRequest(req, 'mongodbUpdateStarted=true');
       await resident.save();
+      logProfileRequest(req, 'mongodbUpdateResult=success');
 
       res.json({
         success: true,
@@ -410,6 +420,7 @@ const updateProfileImage = async (req, res, next) => {
       throw new Error('Resident not found');
     }
   } catch (error) {
+    logProfileRequest(req, `cloudinaryUploadResult=failure error=${error.message || error.name || 'UploadError'}`);
     return next(error);
   }
 };

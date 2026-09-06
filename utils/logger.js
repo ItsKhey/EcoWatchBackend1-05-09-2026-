@@ -7,9 +7,19 @@ const logger = (req, res, next) => {
   res.on('finish', () => {
     const duration = Date.now() - start;
     console.log(`[REQUEST] ${req.method} ${req.originalUrl} [ID: ${requestId}] [STATUS: ${res.statusCode}] [TIME: ${duration}ms]`);
+
+    if (req.originalUrl.startsWith('/api/auth/profile')) {
+      console.log(`[PROFILE_DEBUG] requestId=${requestId} responseStatus=${res.statusCode}`);
+    }
   });
 
   next();
+};
+
+const logProfileRequest = (req, message) => {
+  if (req.originalUrl.startsWith('/api/auth/profile')) {
+    logInfo(req.requestId, 'PROFILE_DEBUG', message);
+  }
 };
 
 const logInfo = (requestId, stage, message) => {
@@ -20,4 +30,4 @@ const logError = (requestId, stage, error) => {
   console.error(`[ERROR] [ID: ${requestId}] [${stage}] ${error}`);
 };
 
-module.exports = { logger, logInfo, logError };
+module.exports = { logger, logInfo, logError, logProfileRequest };

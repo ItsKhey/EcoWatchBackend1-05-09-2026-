@@ -1,13 +1,16 @@
 const jwt = require('jsonwebtoken');
 const Resident = require('../models/Resident');
-const { logError } = require('../utils/logger');
+const { logError, logProfileRequest } = require('../utils/logger');
 
 const protect = async (req, res, next) => {
   let token;
 
+  logProfileRequest(req, `method=${req.method} route=${req.originalUrl}`);
+  logProfileRequest(req, `authorizationPresent=${Boolean(req.headers.authorization)} bearerTokenPresent=${Boolean(req.headers.authorization && req.headers.authorization.startsWith('Bearer '))}`);
+
   if (
     req.headers.authorization &&
-    req.headers.authorization.startsWith('Bearer')
+    req.headers.authorization.startsWith('Bearer ')
   ) {
     try {
       token = req.headers.authorization.split(' ')[1];
@@ -21,9 +24,11 @@ const protect = async (req, res, next) => {
         throw new Error('Not authorized, user not found');
       }
 
-      next();
+      logProfileRequest(req, `authenticationResult=success authenticatedUserId=${req.resident._id}`);
+      return next();
     } catch (error) {
       logError(req.requestId, 'AUTH', `Token verification failed: ${error.message}`);
+      logProfileRequest(req, `authenticationResult=failure error=${error.name || 'AuthenticationError'}`);
       res.status(401);
       return next(new Error('Not authorized, token failed'));
     }
