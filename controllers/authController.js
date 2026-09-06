@@ -65,7 +65,7 @@ const registerResident = async (req, res, next) => {
       message: 'OTP sent to email',
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 };
 
@@ -126,7 +126,7 @@ const verifyOTP = async (req, res, next) => {
       message: 'Account verified and created successfully',
     });
   } catch (error) {
-    next(error);
+    return next(error);
   }
 };
 
@@ -378,7 +378,7 @@ const updateProfile = async (req, res, next) => {
       throw new Error('Resident not found');
     }
   } catch (error) {
-    next(error);
+    return next(error);
   }
 };
 
@@ -408,7 +408,7 @@ const updateProfileImage = async (req, res, next) => {
       throw new Error('Resident not found');
     }
   } catch (error) {
-    next(error);
+    return next(error);
   }
 };
 
