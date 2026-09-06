@@ -54,9 +54,9 @@ residentSchema.methods.matchPassword = async function (enteredPassword) {
 };
 
 // Encrypt password using bcrypt before saving
-residentSchema.pre('save', async function (next) {
+residentSchema.pre('save', async function () {
   if (!this.isModified('password')) {
-    return next();
+    return;
   }
 
   const salt = await bcrypt.genSalt(10);
