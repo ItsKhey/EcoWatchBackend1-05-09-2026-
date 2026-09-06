@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const cloudinary = require('cloudinary').v2;
 
 const cloudinaryConfig = {
@@ -14,6 +16,7 @@ if (Object.values(cloudinaryConfig).some((value) => !value)) {
 
 cloudinary.config({
   ...cloudinaryConfig,
+  secure: true,
 });
 
 module.exports = cloudinary;
