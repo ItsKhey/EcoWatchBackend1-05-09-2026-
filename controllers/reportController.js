@@ -137,15 +137,19 @@ const softDeleteReport = async (req, res, next) => {
   }
 };
 
-// @desc    Restore from Trash
+// @desc    Restore from Trash or Archive
 // @route   POST /api/reports/:id/restore
 const restoreReport = async (req, res, next) => {
   try {
     const found = await findReportInAnyCollection(req.params.id, req.resident.residentId);
 
-    if (!found || found.source !== 'trash_reports') {
+    if (!found) {
       res.status(404);
-      throw new Error('Report not found in trash');
+      throw new Error('Report not found');
+    }
+
+    if (found.source === 'reports') {
+      return res.json(normalizeReport(found.report.toObject(), 'reports'));
     }
 
     const reportData = found.report.toObject();
@@ -158,7 +162,7 @@ const restoreReport = async (req, res, next) => {
       isArchived: false
     });
 
-    await TrashReport.deleteOne({ _id: found.report._id });
+    await found.Model.deleteOne({ _id: found.report._id });
 
     res.json(normalizeReport(restoredReport.toObject(), 'reports'));
   } catch (error) {
