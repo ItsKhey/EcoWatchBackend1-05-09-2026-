@@ -6,6 +6,12 @@ const {
   getMyReports,
   updateReport,
   deleteReport,
+  softDeleteReport,
+  restoreReport,
+  archiveReport,
+  bulkSoftDeleteReports,
+  bulkRestoreReports,
+  bulkArchiveReports,
 } = require('../controllers/reportController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -14,6 +20,12 @@ const upload = multer({ storage });
 
 router.post('/', protect, upload.single('image'), createReport);
 router.get('/my-reports', protect, getMyReports);
+router.post('/bulk-soft-delete', protect, bulkSoftDeleteReports);
+router.post('/bulk-restore', protect, bulkRestoreReports);
+router.post('/bulk-archive', protect, bulkArchiveReports);
+router.patch('/:id/soft-delete', protect, softDeleteReport);
+router.patch('/:id/restore', protect, restoreReport);
+router.patch('/:id/archive', protect, archiveReport);
 router.patch('/:id', protect, upload.single('image'), updateReport);
 router.delete('/:id', protect, deleteReport);
 

@@ -42,6 +42,18 @@ const reportSchema = mongoose.Schema(
       enum: ['Pending', 'Accepted', 'In Progress', 'Completed', 'Denied'],
       default: 'Pending',
     },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+    isArchived: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,

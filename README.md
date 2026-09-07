@@ -32,4 +32,10 @@ The production-ready backend for the EcoWatch ecosystem.
 
 ### Reports
 - `POST /api/reports` - Submit report with image (Multipart) (Protected)
-- `GET /api/reports/my-reports` - Get reports for the current resident (Protected)
+- `GET /api/reports/my-reports?view=default|archive|trash|all` - Get filtered reports for the current resident (Protected)
+- `PATCH /api/reports/:id/soft-delete` - Move a report to trash (Protected)
+- `PATCH /api/reports/:id/restore` - Restore a report from trash (Protected)
+- `PATCH /api/reports/:id/archive` - Archive a report (Protected)
+- `POST /api/reports/bulk-soft-delete` - Move reports to trash; body is an array of IDs (Protected)
+- `POST /api/reports/bulk-restore` - Restore reports; body is an array of IDs (Protected)
+- `POST /api/reports/bulk-archive` - Archive reports; body is an array of IDs (Protected)

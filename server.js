@@ -5,6 +5,7 @@ const morgan = require('morgan');
 const connectDB = require('./config/db');
 const { logger } = require('./utils/logger');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
+const { startReportCleanupJob } = require('./services/reportCleanupService');
 
 dotenv.config();
 
@@ -14,6 +15,7 @@ if (!process.env.JWT_SECRET) {
 }
 
 connectDB();
+startReportCleanupJob();
 
 const app = express();
 
