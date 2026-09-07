@@ -142,18 +142,24 @@ const bulkMoveReports = async (ids, residentId, sourceModels, DestinationModel, 
 
 const softDeleteReport = async (req, res, next) => {
   try {
-    const source = await findOwnedReportInCollections(
-      [[Report, 'reports'], [ArchivedReport, 'archived_reports']],
-      req.params.id,
-      req.resident.residentId
-    );
+    let report = mongoose.isValidObjectId(req.params.id)
+      ? await Report.findById(req.params.id)
+      : await Report.findOne({ reportId: req.params.id });
+    let Model = Report;
 
-    if (!source) {
+    if (!report) {
+      report = mongoose.isValidObjectId(req.params.id)
+        ? await ArchivedReport.findById(req.params.id)
+        : await ArchivedReport.findOne({ reportId: req.params.id });
+      Model = ArchivedReport;
+    }
+
+    if (!report || report.residentId !== req.resident.residentId) {
       res.status(404);
       throw new Error('Report not found');
     }
 
-    const movedReport = await moveReport(source, TrashReport, {
+    const movedReport = await moveReport({ report, Model }, TrashReport, {
       isDeleted: true,
       deletedAt: new Date(),
       isArchived: false,
@@ -192,18 +198,18 @@ const restoreReport = async (req, res, next) => {
 
 const archiveReport = async (req, res, next) => {
   try {
-    const source = await findOwnedReportInCollections(
-      [[Report, 'reports']],
-      req.params.id,
-      req.resident.residentId
-    );
+    const report = await Report.findById(req.params.id);
 
-    if (!source) {
+    if (!report || report.residentId !== req.resident.residentId) {
       res.status(404);
       throw new Error('Report not found');
     }
 
-    const movedReport = await moveReport(source, ArchivedReport, {
+    const movedReport = await moveReport({
+      report,
+      Model: Report,
+      sourceCollection: 'reports',
+    }, ArchivedReport, {
       isDeleted: false,
       deletedAt: null,
       isArchived: true,
