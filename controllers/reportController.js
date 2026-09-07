@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 const Report = require('../models/Report');
+const ArchivedReport = require('../models/ArchivedReport');
+const TrashReport = require('../models/TrashReport');
 const { generateReportId } = require('../utils/generateId');
 const { uploadImage } = require('../services/cloudinaryService');
 const { logInfo, logError } = require('../utils/logger');
@@ -53,93 +55,111 @@ const createReport = async (req, res, next) => {
 const getMyReports = async (req, res, next) => {
   try {
     const view = req.query.view || 'default';
-    const filters = { residentId: req.resident.residentId };
-    const notDeleted = { $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }] };
-    const completedOrDenied = { status: { $in: ['Completed', 'Denied'] } };
-    const effectiveArchived = {
-      $or: [
-        { isArchived: true },
-        { isArchived: { $exists: false }, ...completedOrDenied },
-      ],
-    };
-    const notArchived = {
-      $nor: [effectiveArchived],
-    };
-
-    if (view === 'archive') {
-      filters.$and = [notDeleted];
-      filters.$or = effectiveArchived.$or;
-    } else if (view === 'trash') {
-      filters.isDeleted = true;
-    } else if (view === 'default') {
-      filters.$and = [notDeleted, notArchived];
-      filters.status = 'Pending';
-    } else if (view !== 'all') {
+    if (!['default', 'archive', 'trash', 'inbox', 'all'].includes(view)) {
       res.status(400);
-      throw new Error('Invalid report view. Use default, archive, trash, or all');
+      throw new Error('Invalid report view. Use default, archive, trash, inbox, or all');
     }
 
-    const reports = await Report.find(filters).sort({ createdAt: -1 }).lean();
-    const normalizedReports = reports.map((report) => ({
-      ...report,
-      isDeleted: report.isDeleted ?? false,
-      deletedAt: report.deletedAt ?? null,
-      isArchived: report.isArchived ?? ['Completed', 'Denied'].includes(report.status),
-    }));
-    res.json(normalizedReports);
+    const residentFilter = { residentId: req.resident.residentId };
+    const [reports, archivedReports, trashReports] = await Promise.all([
+      Report.find(residentFilter).lean(),
+      ArchivedReport.find(residentFilter).lean(),
+      TrashReport.find(residentFilter).lean(),
+    ]);
+
+    const allReports = [
+      ...reports.map((report) => normalizeReport(report, 'reports')),
+      ...archivedReports.map((report) => normalizeReport(report, 'archived_reports')),
+      ...trashReports.map((report) => normalizeReport(report, 'trash_reports')),
+    ];
+
+    const visibleReports = view === 'archive'
+      ? allReports.filter((report) => report.sourceCollection === 'archived_reports')
+      : view === 'trash'
+        ? allReports.filter((report) => report.sourceCollection === 'trash_reports')
+        : view === 'default'
+          ? allReports
+          : view === 'inbox'
+            ? allReports.filter((report) => report.sourceCollection === 'reports')
+          : allReports;
+
+    visibleReports.sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
+    res.json(visibleReports);
   } catch (error) {
     next(error);
   }
 };
 
-const findOwnedReport = async (id, residentId) => {
+const normalizeReport = (report, sourceCollection) => ({
+  ...report,
+  sourceCollection,
+  isDeleted: sourceCollection === 'trash_reports' || report.isDeleted === true,
+  deletedAt: report.deletedAt ?? null,
+  isArchived: sourceCollection === 'archived_reports' || report.isArchived === true,
+});
+
+const findOwnedReport = async (Model, id, residentId) => {
   const identifierQuery = mongoose.isValidObjectId(id)
     ? { $or: [{ _id: id }, { reportId: id }] }
     : { reportId: id };
 
-  return Report.findOne({ residentId, ...identifierQuery });
+  return Model.findOne({ residentId, ...identifierQuery });
 };
 
-const updateOwnedReports = async (ids, residentId, update) => {
-  const objectIds = ids.filter((id) => mongoose.isValidObjectId(id));
-  const reportIds = ids.filter((id) => !mongoose.isValidObjectId(id));
-  const identifiers = [];
-
-  if (objectIds.length) {
-    identifiers.push({ _id: { $in: objectIds } });
-  }
-  if (reportIds.length) {
-    identifiers.push({ reportId: { $in: reportIds } });
+const findOwnedReportInCollections = async (models, id, residentId) => {
+  for (const [Model, sourceCollection] of models) {
+    const report = await findOwnedReport(Model, id, residentId);
+    if (report) {
+      return { report, Model, sourceCollection };
+    }
   }
 
-  if (!identifiers.length) {
-    return 0;
+  return null;
+};
+
+const moveReport = async (source, DestinationModel, updates) => {
+  const reportData = source.report.toObject();
+  Object.assign(reportData, updates);
+
+  const movedReport = await DestinationModel.create(reportData);
+  await source.Model.deleteOne({ _id: source.report._id });
+  return movedReport;
+};
+
+const bulkMoveReports = async (ids, residentId, sourceModels, DestinationModel, updates) => {
+  let modifiedCount = 0;
+
+  for (const id of ids) {
+    const source = await findOwnedReportInCollections(sourceModels, id, residentId);
+    if (source) {
+      await moveReport(source, DestinationModel, updates);
+      modifiedCount += 1;
+    }
   }
 
-  const result = await Report.updateMany(
-    { residentId, $or: identifiers },
-    update
-  );
-
-  return result.modifiedCount;
+  return modifiedCount;
 };
 
 const softDeleteReport = async (req, res, next) => {
   try {
-    const report = await findOwnedReport(req.params.id, req.resident.residentId);
+    const source = await findOwnedReportInCollections(
+      [[Report, 'reports'], [ArchivedReport, 'archived_reports']],
+      req.params.id,
+      req.resident.residentId
+    );
 
-    if (!report) {
+    if (!source) {
       res.status(404);
       throw new Error('Report not found');
     }
 
-    const updatedReport = await Report.findByIdAndUpdate(
-      report._id,
-      { isDeleted: true, deletedAt: new Date() },
-      { new: true, runValidators: true }
-    );
+    const movedReport = await moveReport(source, TrashReport, {
+      isDeleted: true,
+      deletedAt: new Date(),
+      isArchived: false,
+    });
 
-    res.json(updatedReport);
+    res.json(normalizeReport(movedReport.toObject(), 'trash_reports'));
   } catch (error) {
     next(error);
   }
@@ -147,20 +167,24 @@ const softDeleteReport = async (req, res, next) => {
 
 const restoreReport = async (req, res, next) => {
   try {
-    const report = await findOwnedReport(req.params.id, req.resident.residentId);
-
-    if (!report) {
-      res.status(404);
-      throw new Error('Report not found');
-    }
-
-    const updatedReport = await Report.findByIdAndUpdate(
-      report._id,
-      { isDeleted: false, deletedAt: null },
-      { new: true, runValidators: true }
+    const source = await findOwnedReportInCollections(
+      [[TrashReport, 'trash_reports']],
+      req.params.id,
+      req.resident.residentId
     );
 
-    res.json(updatedReport);
+    if (!source) {
+      res.status(404);
+      throw new Error('Report not found in trash');
+    }
+
+    const movedReport = await moveReport(source, Report, {
+      isDeleted: false,
+      deletedAt: null,
+      isArchived: false,
+    });
+
+    res.json(normalizeReport(movedReport.toObject(), 'reports'));
   } catch (error) {
     next(error);
   }
@@ -168,26 +192,30 @@ const restoreReport = async (req, res, next) => {
 
 const archiveReport = async (req, res, next) => {
   try {
-    const report = await findOwnedReport(req.params.id, req.resident.residentId);
+    const source = await findOwnedReportInCollections(
+      [[Report, 'reports']],
+      req.params.id,
+      req.resident.residentId
+    );
 
-    if (!report) {
+    if (!source) {
       res.status(404);
       throw new Error('Report not found');
     }
 
-    const updatedReport = await Report.findByIdAndUpdate(
-      report._id,
-      { isArchived: true },
-      { new: true, runValidators: true }
-    );
+    const movedReport = await moveReport(source, ArchivedReport, {
+      isDeleted: false,
+      deletedAt: null,
+      isArchived: true,
+    });
 
-    res.json(updatedReport);
+    res.json(normalizeReport(movedReport.toObject(), 'archived_reports'));
   } catch (error) {
     next(error);
   }
 };
 
-const bulkUpdateReports = (update, message) => async (req, res, next) => {
+const bulkMoveReportsHandler = (sourceModels, DestinationModel, updates, message) => async (req, res, next) => {
   try {
     const ids = req.body;
 
@@ -196,25 +224,37 @@ const bulkUpdateReports = (update, message) => async (req, res, next) => {
       throw new Error('Request body must be a non-empty array of report IDs');
     }
 
-    const modifiedCount = await updateOwnedReports(ids, req.resident.residentId, update);
+    const modifiedCount = await bulkMoveReports(
+      ids,
+      req.resident.residentId,
+      sourceModels,
+      DestinationModel,
+      updates
+    );
     res.json({ message, modifiedCount });
   } catch (error) {
     next(error);
   }
 };
 
-const bulkSoftDeleteReports = bulkUpdateReports(
-  { $set: { isDeleted: true }, $currentDate: { deletedAt: true } },
+const bulkSoftDeleteReports = bulkMoveReportsHandler(
+  [[Report, 'reports'], [ArchivedReport, 'archived_reports']],
+  TrashReport,
+  { isDeleted: true, deletedAt: new Date(), isArchived: false },
   'Reports moved to trash'
 );
 
-const bulkRestoreReports = bulkUpdateReports(
-  { $set: { isDeleted: false, deletedAt: null } },
+const bulkRestoreReports = bulkMoveReportsHandler(
+  [[TrashReport, 'trash_reports']],
+  Report,
+  { isDeleted: false, deletedAt: null, isArchived: false },
   'Reports restored'
 );
 
-const bulkArchiveReports = bulkUpdateReports(
-  { $set: { isArchived: true } },
+const bulkArchiveReports = bulkMoveReportsHandler(
+  [[Report, 'reports']],
+  ArchivedReport,
+  { isDeleted: false, deletedAt: null, isArchived: true },
   'Reports archived'
 );
 

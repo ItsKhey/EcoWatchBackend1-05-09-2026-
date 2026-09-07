@@ -1,10 +1,9 @@
 const cron = require('node-cron');
-const Report = require('../models/Report');
+const TrashReport = require('../models/TrashReport');
 
 const permanentlyDeleteExpiredReports = async () => {
   const expirationDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const result = await Report.deleteMany({
-    isDeleted: true,
+  const result = await TrashReport.deleteMany({
     deletedAt: { $lt: expirationDate },
   });
 
