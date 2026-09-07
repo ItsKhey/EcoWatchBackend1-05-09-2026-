@@ -23,6 +23,7 @@ router.get('/my-reports', protect, getMyReports);
 router.post('/bulk-soft-delete', protect, bulkSoftDeleteReports);
 router.post('/bulk-restore', protect, bulkRestoreReports);
 router.post('/bulk-archive', protect, bulkArchiveReports);
+router.patch('/:id/trash', protect, softDeleteReport);
 router.patch('/:id/soft-delete', protect, softDeleteReport);
 router.patch('/:id/restore', protect, restoreReport);
 router.patch('/:id/archive', protect, archiveReport);

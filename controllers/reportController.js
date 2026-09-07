@@ -55,11 +55,20 @@ const getMyReports = async (req, res, next) => {
     const view = req.query.view || 'default';
     const filters = { residentId: req.resident.residentId };
     const notDeleted = { $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }] };
-    const notArchived = { $or: [{ isArchived: false }, { isArchived: { $exists: false } }] };
+    const completedOrDenied = { status: { $in: ['Completed', 'Denied'] } };
+    const effectiveArchived = {
+      $or: [
+        { isArchived: true },
+        { isArchived: { $exists: false }, ...completedOrDenied },
+      ],
+    };
+    const notArchived = {
+      $nor: [effectiveArchived],
+    };
 
     if (view === 'archive') {
       filters.$and = [notDeleted];
-      filters.$or = [{ isArchived: true }, { status: { $in: ['Completed', 'Denied'] } }];
+      filters.$or = effectiveArchived.$or;
     } else if (view === 'trash') {
       filters.isDeleted = true;
     } else if (view === 'default') {
@@ -75,7 +84,7 @@ const getMyReports = async (req, res, next) => {
       ...report,
       isDeleted: report.isDeleted ?? false,
       deletedAt: report.deletedAt ?? null,
-      isArchived: report.isArchived ?? false,
+      isArchived: report.isArchived ?? ['Completed', 'Denied'].includes(report.status),
     }));
     res.json(normalizedReports);
   } catch (error) {
@@ -124,8 +133,17 @@ const softDeleteReport = async (req, res, next) => {
       throw new Error('Report not found');
     }
 
+    const deletedAt = req.body.deletedAt === undefined
+      ? new Date()
+      : new Date(req.body.deletedAt);
+
+    if (Number.isNaN(deletedAt.getTime())) {
+      res.status(400);
+      throw new Error('deletedAt must be a valid timestamp');
+    }
+
     report.isDeleted = true;
-    report.deletedAt = new Date();
+    report.deletedAt = deletedAt;
     await report.save();
     res.json(report);
   } catch (error) {
