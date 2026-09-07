@@ -223,11 +223,11 @@ const archiveReport = async (req, res, next) => {
 
 const bulkMoveReportsHandler = (sourceModels, DestinationModel, updates, message) => async (req, res, next) => {
   try {
-    const ids = req.body;
+    const { ids } = req.body;
 
     if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== 'string' || !id.trim())) {
       res.status(400);
-      throw new Error('Request body must be a non-empty array of report IDs');
+      throw new Error('Request body must contain a non-empty ids array of report IDs');
     }
 
     const modifiedCount = await bulkMoveReports(

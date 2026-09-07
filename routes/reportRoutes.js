@@ -20,8 +20,10 @@ const upload = multer({ storage });
 
 router.post('/', protect, upload.single('image'), createReport);
 router.get('/my-reports', protect, getMyReports);
-router.post('/bulk-soft-delete', protect, bulkSoftDeleteReports);
+router.post('/bulk-move-to-archive', protect, bulkArchiveReports);
+router.post('/bulk-move-to-trash', protect, bulkSoftDeleteReports);
 router.post('/bulk-restore', protect, bulkRestoreReports);
+router.post('/bulk-soft-delete', protect, bulkSoftDeleteReports);
 router.post('/bulk-archive', protect, bulkArchiveReports);
 router.post('/:id/move-to-trash', protect, softDeleteReport);
 router.post('/:id/move-to-archive', protect, archiveReport);
