@@ -133,19 +133,13 @@ const softDeleteReport = async (req, res, next) => {
       throw new Error('Report not found');
     }
 
-    const deletedAt = req.body.deletedAt === undefined
-      ? new Date()
-      : new Date(req.body.deletedAt);
+    const updatedReport = await Report.findByIdAndUpdate(
+      report._id,
+      { isDeleted: true, deletedAt: new Date() },
+      { new: true, runValidators: true }
+    );
 
-    if (Number.isNaN(deletedAt.getTime())) {
-      res.status(400);
-      throw new Error('deletedAt must be a valid timestamp');
-    }
-
-    report.isDeleted = true;
-    report.deletedAt = deletedAt;
-    await report.save();
-    res.json(report);
+    res.json(updatedReport);
   } catch (error) {
     next(error);
   }
@@ -160,10 +154,13 @@ const restoreReport = async (req, res, next) => {
       throw new Error('Report not found');
     }
 
-    report.isDeleted = false;
-    report.deletedAt = null;
-    await report.save();
-    res.json(report);
+    const updatedReport = await Report.findByIdAndUpdate(
+      report._id,
+      { isDeleted: false, deletedAt: null },
+      { new: true, runValidators: true }
+    );
+
+    res.json(updatedReport);
   } catch (error) {
     next(error);
   }
@@ -178,9 +175,13 @@ const archiveReport = async (req, res, next) => {
       throw new Error('Report not found');
     }
 
-    report.isArchived = true;
-    await report.save();
-    res.json(report);
+    const updatedReport = await Report.findByIdAndUpdate(
+      report._id,
+      { isArchived: true },
+      { new: true, runValidators: true }
+    );
+
+    res.json(updatedReport);
   } catch (error) {
     next(error);
   }
