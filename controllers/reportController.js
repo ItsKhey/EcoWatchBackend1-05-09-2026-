@@ -395,4 +395,5 @@ module.exports = {
   bulkSoftDeleteReports,
   bulkRestoreReports,
   bulkArchiveReports,
+  bulkDeleteReports,
 };
