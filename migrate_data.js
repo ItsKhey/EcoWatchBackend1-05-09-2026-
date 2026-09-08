@@ -1,6 +1,10 @@
 const { MongoClient } = require('mongodb');
+const dns = require('dns');
 const dotenv = require('dotenv');
 dotenv.config();
+
+// FORCE the script to use Google's DNS to bypass your network's SRV block
+dns.setServers(['8.8.8.8', '8.8.4.4']);
 
 async function migrate() {
     const oldUri = process.env.MONGODB_URI;
@@ -11,20 +15,28 @@ async function migrate() {
         process.exit(1);
     }
 
-    const oldClient = new MongoClient(oldUri);
-    const newClient = new MongoClient(newUri);
+    // Add connectTimeoutMS to give it more time on slow networks
+    const options = {
+        connectTimeoutMS: 30000,
+        serverSelectionTimeoutMS: 30000
+    };
+
+    const oldClient = new MongoClient(oldUri, options);
+    const newClient = new MongoClient(newUri, options);
 
     try {
-        console.log('--- Starting Data Migration ---');
+        console.log('--- Starting Data Migration (Using Google DNS) ---');
 
+        console.log('Connecting to SOURCE database...');
         await oldClient.connect();
-        console.log('Connected to SOURCE database.');
+        console.log('Connected to SOURCE.');
 
+        console.log('Connecting to DESTINATION database...');
         await newClient.connect();
-        console.log('Connected to DESTINATION database.');
+        console.log('Connected to DESTINATION.');
 
-        const oldDb = oldClient.db(); // Gets DB from connection string (EcoWatchBackend1)
-        const newDb = newClient.db(); // Gets DB from connection string (ResidentsDB)
+        const oldDb = oldClient.db();
+        const newDb = newClient.db();
 
         const collections = ['residents', 'reports', 'trashreports', 'archivedreports'];
 
@@ -33,9 +45,7 @@ async function migrate() {
             const data = await oldDb.collection(collName).find({}).toArray();
 
             if (data.length > 0) {
-                // Clear the new collection first
                 await newDb.collection(collName).deleteMany({});
-                // Insert the old data
                 const result = await newDb.collection(collName).insertMany(data);
                 console.log(`Success: Moved ${result.insertedCount} documents to ${collName}`);
             } else {
@@ -46,7 +56,10 @@ async function migrate() {
         console.log('--- Migration Completed Successfully ---');
     } catch (err) {
         console.error('Migration failed with error:');
-        console.error(err);
+        console.error(err.message);
+        if (err.message.includes('ECONNREFUSED')) {
+            console.log('\nTIP: Your network is still blocking the connection. Please try connecting your computer to a MOBILE HOTSPOT and run this script again.');
+        }
     } finally {
         await oldClient.close();
         await newClient.close();
