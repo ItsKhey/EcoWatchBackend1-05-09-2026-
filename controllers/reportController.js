@@ -273,6 +273,35 @@ const bulkSoftDeleteReports = bulkMoveReportsHandler('trash_reports');
 const bulkRestoreReports = bulkMoveReportsHandler('reports');
 const bulkArchiveReports = bulkMoveReportsHandler('archived_reports');
 
+// @desc    Bulk Permanent Delete
+// @route   POST /api/reports/bulk-delete
+const bulkDeleteReports = async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    let modifiedCount = 0;
+
+    for (const id of ids) {
+      const found = await findReportInAnyCollection(id, req.resident.residentId);
+      if (!found) continue;
+
+      await found.Model.deleteOne({ _id: found.report._id });
+
+      await logHistory({
+        residentId: req.resident.residentId,
+        reportId: found.report.reportId,
+        action: 'PERMANENTLY_DELETED',
+        description: `Report '${found.report.title}' permanently removed via bulk delete.`
+      });
+
+      modifiedCount++;
+    }
+
+    res.json({ message: `Permanently removed ${modifiedCount} reports`, modifiedCount });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Update a report
 // @route   PATCH /api/reports/:id
 const updateReport = async (req, res, next) => {

@@ -12,6 +12,7 @@ const {
   bulkSoftDeleteReports,
   bulkRestoreReports,
   bulkArchiveReports,
+  bulkDeleteReports,
 } = require('../controllers/reportController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -25,6 +26,7 @@ router.post('/bulk-move-to-trash', protect, bulkSoftDeleteReports);
 router.post('/bulk-restore', protect, bulkRestoreReports);
 router.post('/bulk-soft-delete', protect, bulkSoftDeleteReports);
 router.post('/bulk-archive', protect, bulkArchiveReports);
+router.post('/bulk-delete', protect, bulkDeleteReports);
 router.post('/:id/move-to-trash', protect, softDeleteReport);
 router.post('/:id/move-to-archive', protect, archiveReport);
 router.post('/:id/restore', protect, restoreReport);
