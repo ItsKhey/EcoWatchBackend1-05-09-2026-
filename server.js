@@ -2,7 +2,7 @@ const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const morgan = require('morgan');
-const connectDB = require('./config/db');
+const { authConnection, appConnection } = require('./config/db');
 const { logger } = require('./utils/logger');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { startReportCleanupJob } = require('./services/reportCleanupService');
@@ -14,7 +14,7 @@ if (!process.env.JWT_SECRET) {
   process.exit(1);
 }
 
-connectDB();
+// connectDB() is replaced by importing the connection objects which start connecting immediately
 startReportCleanupJob();
 
 const app = express();
@@ -40,6 +40,7 @@ app.get('/api/health', (req, res) => {
 // Routes
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
+app.use('/api/history', require('./routes/historyRoutes'));
 
 app.use(notFound);
 app.use(errorHandler);

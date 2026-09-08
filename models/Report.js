@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { appConnection } = require('../config/db');
 
 const reportSchema = mongoose.Schema(
   {
@@ -60,6 +61,6 @@ const reportSchema = mongoose.Schema(
   }
 );
 
-const Report = mongoose.model('Report', reportSchema);
+const Report = appConnection.model('Report', reportSchema);
 
 module.exports = Report;

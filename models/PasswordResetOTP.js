@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { authConnection } = require('../config/db');
 
 const passwordResetOtpSchema = mongoose.Schema(
   {
@@ -36,6 +37,6 @@ const passwordResetOtpSchema = mongoose.Schema(
 
 passwordResetOtpSchema.index({ otpExpires: 1 }, { expireAfterSeconds: 0 });
 
-const PasswordResetOTP = mongoose.model('PasswordResetOTP', passwordResetOtpSchema);
+const PasswordResetOTP = authConnection.model('PasswordResetOTP', passwordResetOtpSchema);
 
 module.exports = PasswordResetOTP;

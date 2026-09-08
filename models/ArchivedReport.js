@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { appConnection } = require('../config/db');
 
 const archivedReportSchema = mongoose.Schema(
   {
@@ -20,5 +21,5 @@ const archivedReportSchema = mongoose.Schema(
   }
 );
 
-const ArchivedReport = mongoose.model('ArchivedReport', archivedReportSchema);
+const ArchivedReport = appConnection.model('ArchivedReport', archivedReportSchema);
 module.exports = ArchivedReport;

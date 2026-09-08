@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { appConnection } = require('../config/db');
 
 const residentSchema = mongoose.Schema(
   {
@@ -63,6 +64,6 @@ residentSchema.pre('save', async function () {
   this.password = await bcrypt.hash(this.password, salt);
 });
 
-const Resident = mongoose.model('Resident', residentSchema);
+const Resident = appConnection.model('Resident', residentSchema);
 
 module.exports = Resident;

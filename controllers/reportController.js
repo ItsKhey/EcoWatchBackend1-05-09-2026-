@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Report = require('../models/Report');
 const ArchivedReport = require('../models/ArchivedReport');
 const TrashReport = require('../models/TrashReport');
+const History = require('../models/History');
 const { generateReportId } = require('../utils/generateId');
 const { uploadImage } = require('../services/cloudinaryService');
 const { logInfo, logError } = require('../utils/logger');
@@ -39,6 +40,14 @@ const createReport = async (req, res, next) => {
     });
 
     logInfo(req.requestId, 'DATABASE', `Report created: ${report.reportId}`);
+
+    await logHistory({
+      residentId: req.resident.residentId,
+      reportId: report.reportId,
+      action: 'SUBMITTED',
+      newStatus: report.status,
+      description: `Report '${title}' was submitted.`
+    });
 
     res.status(201).json(report);
   } catch (error) {
@@ -131,6 +140,13 @@ const softDeleteReport = async (req, res, next) => {
 
     await found.Model.deleteOne({ _id: found.report._id });
 
+    await logHistory({
+      residentId: req.resident.residentId,
+      reportId: trashReport.reportId,
+      action: 'MOVED_TO_TRASH',
+      description: `Report '${trashReport.title}' moved to trash.`
+    });
+
     res.json(normalizeReport(trashReport.toObject(), 'trash_reports'));
   } catch (error) {
     next(error);
@@ -162,7 +178,15 @@ const restoreReport = async (req, res, next) => {
       isArchived: false
     });
 
+    await restoredReport.save();
     await found.Model.deleteOne({ _id: found.report._id });
+
+    await logHistory({
+      residentId: req.resident.residentId,
+      reportId: restoredReport.reportId,
+      action: 'RESTORED',
+      description: `Report '${restoredReport.title}' restored to inbox.`
+    });
 
     res.json(normalizeReport(restoredReport.toObject(), 'reports'));
   } catch (error) {
@@ -196,6 +220,13 @@ const archiveReport = async (req, res, next) => {
     });
 
     await found.Model.deleteOne({ _id: found.report._id });
+
+    await logHistory({
+      residentId: req.resident.residentId,
+      reportId: archivedReport.reportId,
+      action: 'ARCHIVED',
+      description: `Report '${archivedReport.title}' moved to archive.`
+    });
 
     res.json(normalizeReport(archivedReport.toObject(), 'archived_reports'));
   } catch (error) {
@@ -261,12 +292,27 @@ const updateReport = async (req, res, next) => {
       imageUrl = result.secure_url;
     }
 
+    const oldStatus = report.status;
+
     report.title = title || report.title;
     report.category = category || report.category;
     report.description = description || report.description;
     report.latitude = latitude || report.latitude;
     report.longitude = longitude || report.longitude;
     report.imageUrl = imageUrl;
+
+    // If status is allowed to be updated by resident (usually not, but checking just in case)
+    if (req.body.status && req.body.status !== oldStatus) {
+      report.status = req.body.status;
+      await logHistory({
+        residentId: req.resident.residentId,
+        reportId: report.reportId,
+        action: 'STATUS_CHANGED',
+        oldStatus: oldStatus,
+        newStatus: report.status,
+        description: `Status changed from ${oldStatus} to ${report.status}`
+      });
+    }
 
     const updatedReport = await report.save();
     res.json(updatedReport);
@@ -287,9 +333,25 @@ const deleteReport = async (req, res, next) => {
     }
 
     await found.Model.deleteOne({ _id: found.report._id });
+
+    await logHistory({
+      residentId: req.resident.residentId,
+      reportId: found.report.reportId,
+      action: 'PERMANENTLY_DELETED',
+      description: `Report '${found.report.title}' permanently deleted.`
+    });
+
     res.json({ message: 'Report permanently removed' });
   } catch (error) {
     next(error);
+  }
+};
+
+const logHistory = async (data) => {
+  try {
+    await History.create(data);
+  } catch (err) {
+    console.error('Failed to log history:', err);
   }
 };
 

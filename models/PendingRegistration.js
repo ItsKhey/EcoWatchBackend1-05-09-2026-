@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { authConnection } = require('../config/db');
 
 const pendingRegistrationSchema = mongoose.Schema(
   {
@@ -33,6 +34,6 @@ const pendingRegistrationSchema = mongoose.Schema(
 // Automatically delete expired registrations
 pendingRegistrationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 3600 }); // Expire in 1 hour
 
-const PendingRegistration = mongoose.model('PendingRegistration', pendingRegistrationSchema);
+const PendingRegistration = authConnection.model('PendingRegistration', pendingRegistrationSchema);
 
 module.exports = PendingRegistration;

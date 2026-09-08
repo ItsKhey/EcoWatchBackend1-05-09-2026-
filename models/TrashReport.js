@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { appConnection } = require('../config/db');
 
 const trashReportSchema = mongoose.Schema(
   {
@@ -20,5 +21,5 @@ const trashReportSchema = mongoose.Schema(
   }
 );
 
-const TrashReport = mongoose.model('TrashReport', trashReportSchema);
+const TrashReport = appConnection.model('TrashReport', trashReportSchema);
 module.exports = TrashReport;
