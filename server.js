@@ -6,6 +6,7 @@ const { authConnection, appConnection } = require('./config/db');
 const { logger } = require('./utils/logger');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { startReportCleanupJob } = require('./services/reportCleanupService');
+const { startHistoryCleanupJob } = require('./services/historyCleanupService');
 
 dotenv.config();
 
@@ -16,6 +17,7 @@ if (!process.env.JWT_SECRET) {
 
 // connectDB() is replaced by importing the connection objects which start connecting immediately
 startReportCleanupJob();
+startHistoryCleanupJob();
 
 const app = express();
 

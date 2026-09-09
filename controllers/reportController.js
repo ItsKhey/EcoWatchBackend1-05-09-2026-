@@ -260,6 +260,24 @@ const bulkMoveReportsHandler = (targetCollection) => async (req, res, next) => {
 
       await DestinationModel.create({ ...reportData, _id: found.report._id, ...updates });
       await found.Model.deleteOne({ _id: found.report._id });
+
+      let action = 'RESTORED';
+      let actionDesc = `Report '${found.report.title}' restored to inbox.`;
+      if (targetCollection === 'archived_reports') {
+        action = 'ARCHIVED';
+        actionDesc = `Report '${found.report.title}' moved to archive.`;
+      } else if (targetCollection === 'trash_reports') {
+        action = 'MOVED_TO_TRASH';
+        actionDesc = `Report '${found.report.title}' moved to trash.`;
+      }
+
+      await logHistory({
+        residentId: req.resident.residentId,
+        reportId: found.report.reportId,
+        action: action,
+        description: actionDesc + ' (Bulk action)'
+      });
+
       modifiedCount++;
     }
 
