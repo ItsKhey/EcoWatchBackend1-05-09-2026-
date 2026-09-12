@@ -43,6 +43,8 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/history', require('./routes/historyRoutes'));
+app.use('/api/notifications', require('./routes/notificationRoutes'));
+app.use('/api/admin', require('./routes/adminRoutes'));
 
 app.use(notFound);
 app.use(errorHandler);
