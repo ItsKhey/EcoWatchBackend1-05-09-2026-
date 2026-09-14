@@ -238,8 +238,6 @@ const verifyResetOTP = async (req, res, next) => {
       throw new Error('Invalid or expired OTP');
     }
 
-    await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
-
     res.json({
       success: true,
       message: 'OTP verified successfully',
