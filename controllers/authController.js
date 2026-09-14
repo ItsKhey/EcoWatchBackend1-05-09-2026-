@@ -294,7 +294,13 @@ const resetPassword = async (req, res, next) => {
       throw new Error('Invalid or expired OTP');
     }
 
-    const resident = await Resident.findOne({ email });
+    let resident;
+    if (email) {
+      resident = await Resident.findOne({ email });
+    } else if (username) {
+      resident = await Resident.findOne({ username });
+    }
+
     if (!resident) {
       await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
       res.status(400);
@@ -309,6 +315,31 @@ const resetPassword = async (req, res, next) => {
       success: true,
       message: 'Password reset successfully',
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Change password (authenticated)
+// @route   POST /api/auth/change-password
+// @access  Private
+const changePassword = async (req, res, next) => {
+  const { oldPassword, newPassword } = req.body;
+
+  try {
+    const resident = await Resident.findById(req.resident._id);
+
+    if (resident && (await resident.matchPassword(oldPassword))) {
+      resident.password = newPassword;
+      await resident.save();
+      res.json({
+        success: true,
+        message: 'Password updated successfully',
+      });
+    } else {
+      res.status(401);
+      throw new Error('Invalid current password');
+    }
   } catch (error) {
     next(error);
   }
