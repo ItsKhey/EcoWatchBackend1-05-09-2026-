@@ -12,6 +12,7 @@ const {
   updateProfile,
   updateProfileImage,
   changePassword,
+  resetLoggedInPassword,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -25,6 +26,7 @@ router.post('/verify-reset-otp', verifyResetOTP);
 router.post('/reset-password', resetPassword);
 router.post('/login', loginResident);
 router.post('/change-password', protect, changePassword);
+router.patch('/reset-logged-in', protect, resetLoggedInPassword);
 router.get('/me', protect, getResidentProfile);
 router.patch('/profile', protect, updateProfile);
 router.patch('/profile/image', protect, upload.single('image'), updateProfileImage);

@@ -490,6 +490,32 @@ const updateProfileImage = async (req, res, next) => {
   }
 };
 
+// @desc    Reset password for logged-in resident (No OTP required per UI request)
+// @route   PATCH /api/auth/reset-logged-in
+// @access  Private
+const resetLoggedInPassword = async (req, res, next) => {
+  const { password } = req.body;
+
+  try {
+    const resident = await Resident.findById(req.resident._id);
+
+    if (!resident) {
+      res.status(404);
+      throw new Error('Resident not found');
+    }
+
+    resident.password = password;
+    await resident.save();
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   registerResident,
   verifyOTP,
@@ -501,4 +527,5 @@ module.exports = {
   updateProfile,
   updateProfileImage,
   changePassword,
+  resetLoggedInPassword,
 };
