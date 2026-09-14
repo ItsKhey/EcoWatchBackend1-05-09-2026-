@@ -23,6 +23,7 @@ router.post('/forgot-password', forgotPassword);
 router.post('/verify-reset-otp', verifyResetOTP);
 router.post('/reset-password', resetPassword);
 router.post('/login', loginResident);
+router.post('/change-password', protect, changePassword);
 router.get('/me', protect, getResidentProfile);
 router.patch('/profile', protect, updateProfile);
 router.patch('/profile/image', protect, upload.single('image'), updateProfileImage);

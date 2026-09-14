@@ -131,16 +131,36 @@ const verifyOTP = async (req, res, next) => {
 };
 
 const forgotPassword = async (req, res, next) => {
-  const { email } = req.body;
+  const { username, email } = req.body;
 
   try {
-    if (!email) {
+    if (!username && !email) {
       res.status(400);
-      throw new Error('Email is required');
+      throw new Error('Username or Email is required');
     }
 
-    const resident = await Resident.findOne({ email });
-    const targetEmail = resident ? resident.email : email;
+    let resident;
+    if (username) {
+      resident = await Resident.findOne({ username });
+    } else {
+      resident = await Resident.findOne({ email });
+    }
+
+    // Even if resident not found, we don't leak it for security,
+    // but we need an email to send to.
+    let targetEmail;
+    if (resident) {
+      targetEmail = resident.email;
+    } else if (email) {
+      targetEmail = email;
+    } else {
+      // Username provided but not found, and no email provided
+      res.json({
+        success: true,
+        message: 'If an account exists for this username, a reset code has been sent.',
+      });
+      return;
+    }
     const otp = generateOTP(4);
     const otpHash = await hashOtp(otp);
 
@@ -174,15 +194,22 @@ const forgotPassword = async (req, res, next) => {
 };
 
 const verifyResetOTP = async (req, res, next) => {
-  const { email, otp } = req.body;
+  const { email, username, otp } = req.body;
 
   try {
-    if (!email || !otp) {
+    if ((!email && !username) || !otp) {
       res.status(400);
-      throw new Error('Email and OTP are required');
+      throw new Error('Username/Email and OTP are required');
     }
 
-    const resetEntry = await PasswordResetOTP.findOne({ email });
+    let targetEmail = email;
+    if (!targetEmail && username) {
+      const resByUsername = await Resident.findOne({ username });
+      if (resByUsername) targetEmail = resByUsername.email;
+      else targetEmail = 'unknown';
+    }
+
+    const resetEntry = await PasswordResetOTP.findOne({ email: targetEmail });
 
     if (!resetEntry) {
       res.status(400);
@@ -223,15 +250,22 @@ const verifyResetOTP = async (req, res, next) => {
 };
 
 const resetPassword = async (req, res, next) => {
-  const { email, otp, password } = req.body;
+  const { email, username, otp, password } = req.body;
 
   try {
-    if (!email || !otp || !password) {
+    if ((!email && !username) || !otp || !password) {
       res.status(400);
-      throw new Error('Email, OTP, and password are required');
+      throw new Error('Username/Email, OTP, and password are required');
     }
 
-    const resetEntry = await PasswordResetOTP.findOne({ email });
+    let targetEmail = email;
+    if (!targetEmail && username) {
+      const resByUsername = await Resident.findOne({ username });
+      if (resByUsername) targetEmail = resByUsername.email;
+      else targetEmail = 'unknown'; // Will fail otp check anyway
+    }
+
+    const resetEntry = await PasswordResetOTP.findOne({ email: targetEmail });
 
     if (!resetEntry) {
       res.status(400);
@@ -435,4 +469,5 @@ module.exports = {
   getResidentProfile,
   updateProfile,
   updateProfileImage,
+  changePassword,
 };
