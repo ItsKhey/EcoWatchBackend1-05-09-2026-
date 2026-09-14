@@ -43,6 +43,10 @@ const reportSchema = mongoose.Schema(
       enum: ['Pending', 'Accepted', 'In Progress', 'Completed', 'Denied'],
       default: 'Pending',
     },
+    adminResponse: {
+      type: String,
+      default: '',
+    },
     isDeleted: {
       type: Boolean,
       default: false,

@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const { approveReportCompletion } = require('../controllers/adminController');
+const { approveReportCompletion, updateReportStatus } = require('../controllers/adminController');
 
-// Simulating Admin Endpoint
+// Simulating Admin Endpoints
 router.post('/reports/:id/approve', approveReportCompletion);
+router.patch('/reports/:id/status', updateReportStatus);
 
 module.exports = router;
