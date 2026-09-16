@@ -411,13 +411,23 @@ const getResidentProfile = async (req, res, next) => {
 // @route   PATCH /api/auth/profile
 // @access  Private
 const updateProfile = async (req, res, next) => {
-  const { firstName, lastName, email, address } = req.body;
+  const { firstName, lastName, username, email, address } = req.body;
   logProfileRequest(req, `controllerReached=true requestBodyFields=${Object.keys(req.body).join(',') || 'none'}`);
 
   try {
     const resident = await Resident.findById(req.resident._id);
 
     if (resident) {
+      // If username is changing, check for uniqueness
+      if (username && username !== resident.username) {
+        const usernameExists = await Resident.findOne({ username });
+        if (usernameExists) {
+          res.status(400);
+          throw new Error('Username is already taken');
+        }
+        resident.username = username;
+      }
+
       resident.firstName = firstName || resident.firstName;
       resident.lastName = lastName || resident.lastName;
       resident.email = email || resident.email;
