@@ -175,7 +175,8 @@ const restoreReport = async (req, res, next) => {
       _id: found.report._id,
       isDeleted: false,
       deletedAt: null,
-      isArchived: false
+      isArchived: false,
+      isRestored: true
     });
 
     await restoredReport.save();
@@ -255,7 +256,7 @@ const bulkMoveReportsHandler = (targetCollection) => async (req, res, next) => {
         updates = { isDeleted: true, deletedAt: new Date(), isArchived: false };
       } else {
         DestinationModel = Report;
-        updates = { isDeleted: false, isArchived: false };
+        updates = { isDeleted: false, isArchived: false, isRestored: true };
       }
 
       await DestinationModel.create({ ...reportData, _id: found.report._id, ...updates });

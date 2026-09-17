@@ -15,7 +15,7 @@ const historySchema = mongoose.Schema(
     action: {
       type: String,
       required: true,
-      enum: ['SUBMITTED', 'MOVED_TO_TRASH', 'ARCHIVED', 'RESTORED', 'STATUS_CHANGED', 'PERMANENTLY_DELETED', 'COMPLETED'],
+      enum: ['SUBMITTED', 'MOVED_TO_TRASH', 'ARCHIVED', 'RESTORED', 'STATUS_CHANGED', 'PERMANENTLY_DELETED', 'COMPLETED', 'Trashed', 'Archived', 'Restored', 'Deleted', 'Submitted', 'Status Update'],
     },
     oldStatus: {
       type: String,

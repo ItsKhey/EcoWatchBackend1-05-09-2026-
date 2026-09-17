@@ -59,6 +59,10 @@ const reportSchema = mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isRestored: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,
