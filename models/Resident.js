@@ -43,6 +43,24 @@ const residentSchema = mongoose.Schema(
       type: Boolean,
       default: true, // Should be true if they passed OTP
     },
+    role: {
+      type: String,
+      enum: ['RESIDENT', 'ADMIN', 'Environmental Services Personnel'],
+      default: 'RESIDENT',
+    },
+    status: {
+      type: String,
+      enum: ['AVAILABLE', 'ON_TASK', 'OFF_DUTY', 'INACTIVE'],
+      default: 'AVAILABLE',
+    },
+    phoneNumber: {
+      type: String,
+      default: '',
+    },
+    createdById: {
+      type: String,
+      default: 'SYSTEM',
+    },
   },
   {
     timestamps: true,

@@ -3,6 +3,7 @@ const dotenv = require('dotenv');
 const cors = require('cors');
 const morgan = require('morgan');
 const { authConnection, appConnection } = require('./config/db');
+const seedAdmin = require('./utils/seedAdmin');
 const { logger } = require('./utils/logger');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { startReportCleanupJob } = require('./services/reportCleanupService');
@@ -18,6 +19,11 @@ if (!process.env.JWT_SECRET) {
 // connectDB() is replaced by importing the connection objects which start connecting immediately
 startReportCleanupJob();
 startHistoryCleanupJob();
+
+// Seed Admin Account
+appConnection.once('open', () => {
+  seedAdmin();
+});
 
 const app = express();
 

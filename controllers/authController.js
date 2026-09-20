@@ -366,6 +366,9 @@ const loginResident = async (req, res, next) => {
           email: resident.email,
           address: resident.address,
           profileImage: resident.profileImage,
+          role: resident.role,
+          status: resident.status,
+          phoneNumber: resident.phoneNumber,
         },
       });
       logInfo(req.requestId, 'AUTH', `Login successful: ${resident.residentId}`);

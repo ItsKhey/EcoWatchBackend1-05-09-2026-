@@ -40,12 +40,31 @@ const reportSchema = mongoose.Schema(
     status: {
       type: String,
       required: true,
-      enum: ['Pending', 'Accepted', 'In Progress', 'Completed', 'Denied'],
+      enum: ['Pending', 'Accepted', 'Assigned', 'In Progress', 'Completed', 'Denied'],
       default: 'Pending',
     },
     adminResponse: {
       type: String,
       default: '',
+    },
+    assignedPersonnelIds: [
+      {
+        type: String,
+      },
+    ],
+    priority: {
+      type: String,
+      enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'],
+      default: 'LOW',
+    },
+    handledById: {
+      type: String,
+    },
+    resolutionImageUrl: {
+      type: String,
+    },
+    resolvedAt: {
+      type: String,
     },
     isDeleted: {
       type: Boolean,

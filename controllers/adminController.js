@@ -1,10 +1,121 @@
 const Report = require('../models/Report');
 const Notification = require('../models/Notification');
 const History = require('../models/History');
+const Resident = require('../models/Resident');
+const { generateResidentId } = require('../utils/generateId');
 
-// @desc    Approve a report completion (Simulating Admin action)
+// @desc    Get all reports for admin
+// @route   GET /api/admin/reports
+// @access  Private/Admin
+const getAllReports = async (req, res, next) => {
+  try {
+    const reports = await Report.find({}).sort({ createdAt: -1 });
+    res.json(reports);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Assign personnel to a report
+// @route   POST /api/admin/reports/:id/assign
+// @access  Private/Admin
+const assignPersonnel = async (req, res, next) => {
+  const { assignedPersonnelIds, priority, handledById } = req.body;
+
+  try {
+    const report = await Report.findById(req.params.id);
+    if (!report) {
+      res.status(404);
+      throw new Error('Report not found');
+    }
+
+    report.assignedPersonnelIds = assignedPersonnelIds;
+    report.priority = priority || report.priority;
+    report.handledById = handledById;
+    report.status = 'Assigned';
+
+    const updatedReport = await report.save();
+
+    // Notify personnel
+    for (const pId of assignedPersonnelIds) {
+      await Notification.create({
+        residentId: pId,
+        title: 'New Task Assigned',
+        message: `You have been assigned to report: ${report.title}`,
+        type: 'TASK_ASSIGNED',
+      });
+    }
+
+    // Log to history
+    await History.create({
+      residentId: report.residentId,
+      reportId: report.reportId,
+      action: 'ASSIGNED',
+      oldStatus: 'Pending',
+      newStatus: 'Assigned',
+      description: `Report assigned to ${assignedPersonnelIds.length} personnel with ${priority} priority.`,
+    });
+
+    res.json(updatedReport);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get all personnel
+// @route   GET /api/admin/personnel
+// @access  Private/Admin
+const getPersonnel = async (req, res, next) => {
+  try {
+    const personnel = await Resident.find({ role: 'Environmental Services Personnel' });
+    res.json(personnel);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Create personnel account
+// @route   POST /api/admin/create-personnel
+// @access  Private/Admin
+const createPersonnel = async (req, res, next) => {
+  const { firstName, lastName, username, email, password, phoneNumber } = req.body;
+
+  try {
+    const userExists = await Resident.findOne({ username });
+    if (userExists) {
+      res.status(400);
+      throw new Error('Username is already taken');
+    }
+
+    const personnel = await Resident.create({
+      residentId: generateResidentId(),
+      firstName,
+      lastName,
+      username,
+      email,
+      password,
+      phoneNumber,
+      role: 'Environmental Services Personnel',
+      isVerified: true,
+      createdById: req.resident.residentId,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Personnel account created successfully',
+      personnel: {
+        residentId: personnel.residentId,
+        username: personnel.username,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Approve a report completion
 // @route   POST /api/admin/reports/:id/approve
-// @access  Public (Should be restricted in production)
+// @access  Private/Admin
 const approveReportCompletion = async (req, res, next) => {
   try {
     const report = await Report.findById(req.params.id);
@@ -15,9 +126,9 @@ const approveReportCompletion = async (req, res, next) => {
 
     const oldStatus = report.status;
     report.status = 'Completed';
+    report.resolvedAt = new Date().toISOString();
     await report.save();
 
-    // 1. Create Notification for the Resident
     await Notification.create({
       residentId: report.residentId,
       title: 'Report Completed',
@@ -25,7 +136,6 @@ const approveReportCompletion = async (req, res, next) => {
       type: 'REPORT_UPDATE'
     });
 
-    // 2. Log to History
     await History.create({
       residentId: report.residentId,
       reportId: report.reportId,
@@ -41,75 +151,10 @@ const approveReportCompletion = async (req, res, next) => {
   }
 };
 
-// @desc    Update report status and admin response
-// @route   PATCH /api/admin/reports/:id/status
-// @access  Public (Should be restricted in production)
-const updateReportStatus = async (req, res, next) => {
-  const { status, adminResponse } = req.body;
-
-  try {
-    const report = await Report.findById(req.params.id);
-    if (!report) {
-      res.status(404);
-      throw new Error('Report not found');
-    }
-
-    // Validation for In Progress and Denied
-    if ((status === 'In Progress' || status === 'Denied') && !adminResponse) {
-      res.status(400);
-      throw new Error(`Admin response is required when status is ${status}`);
-    }
-
-    const oldStatus = report.status;
-    report.status = status || report.status;
-    if (adminResponse !== undefined) {
-      report.adminResponse = adminResponse;
-    }
-
-    await report.save();
-
-    // Notification and History for major status changes
-    if (status === 'In Progress' || status === 'Denied' || status === 'Completed') {
-      let title = 'Report Update';
-      let message = `Your waste report status is now: ${status}.`;
-      let action = 'STATUS_CHANGED';
-
-      if (status === 'In Progress') {
-        title = 'Report In Progress';
-        message = `Your waste report has been reviewed and assigned for cleanup. Status: In Progress.`;
-      } else if (status === 'Denied') {
-        title = 'Report Denied';
-        message = `Your waste report was reviewed but could not be approved. Reason: ${adminResponse}`;
-      } else if (status === 'Completed') {
-        title = 'Report Completed';
-        message = `Your waste report has been completed. ID: ${report.reportId}`;
-        action = 'COMPLETED';
-      }
-
-      await Notification.create({
-        residentId: report.residentId,
-        title,
-        message,
-        type: 'REPORT_UPDATE'
-      });
-
-      await History.create({
-        residentId: report.residentId,
-        reportId: report.reportId,
-        action,
-        oldStatus,
-        newStatus: status,
-        description: `Admin updated report status to '${status}'. ${adminResponse ? 'Remarks: ' + adminResponse : ''}`
-      });
-    }
-
-    res.json(report);
-  } catch (error) {
-    next(error);
-  }
-};
-
 module.exports = {
+  getAllReports,
+  assignPersonnel,
+  getPersonnel,
+  createPersonnel,
   approveReportCompletion,
-  updateReportStatus
 };
