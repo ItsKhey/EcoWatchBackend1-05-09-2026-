@@ -367,17 +367,39 @@ const loginResident = async (req, res, next) => {
     const identifier = username?.trim();
     logInfo(req.requestId, 'AUTH', `Login attempt for username: ${identifier}`);
 
-    // Try finding in Resident collection first
-    let user = await Resident.findOne({
+    // Check the admin collection first so duplicate resident identifiers do not block admin login.
+    const admin = await Admin.findOne({
       $or: [{ username: identifier }, { email: identifier }],
     });
 
-    // If not found, check Admin collection
-    if (!user) {
-      user = await Admin.findOne({
-        $or: [{ username: identifier }, { email: identifier }],
+    if (admin && (await bcrypt.compare(password, admin.password))) {
+      res.json({
+        success: true,
+        token: generateToken(admin._id),
+        resident: {
+          residentId: admin.residentId,
+          firstName: admin.firstName,
+          lastName: admin.lastName,
+          username: admin.username,
+          email: admin.email,
+          address: admin.address,
+          profileImage: admin.profileImage,
+          role: admin.role,
+          status: admin.status || 'AVAILABLE',
+          phoneNumber: admin.phoneNumber || '',
+        },
       });
+      logInfo(req.requestId, 'AUTH', `Admin login successful: ${admin.residentId}`);
+      return;
     }
+
+    if (admin) {
+      logInfo(req.requestId, 'AUTH', `Admin login failed: invalid password for ${identifier}`);
+    }
+
+    const user = await Resident.findOne({
+      $or: [{ username: identifier }, { email: identifier }],
+    });
 
     if (user && (await user.matchPassword(password))) {
       res.json({
@@ -398,6 +420,7 @@ const loginResident = async (req, res, next) => {
       });
       logInfo(req.requestId, 'AUTH', `Login successful: ${user.residentId} (${user.role})`);
     } else {
+      logInfo(req.requestId, 'AUTH', `Login failed: invalid credentials for ${identifier}`);
       res.status(401);
       throw new Error('Invalid username or password');
     }
