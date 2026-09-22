@@ -5,42 +5,47 @@ const path = require('path');
 // Load env vars from parent directory
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
-const { appConnection } = require('../config/db');
+const { appConnection, adminConnection } = require('../config/db');
 const Resident = require('../models/Resident');
 const Admin = require('../models/Admin');
 
 async function migrate() {
-  console.log('Starting Admin Migration...');
+  console.log('Starting Final Cross-Database Migration...');
 
   try {
-    // 1. Find all admins in the Resident collection
-    const admins = await Resident.find({ role: 'ADMIN' });
-    console.log(`Found ${admins.length} admins in 'residents' collection.`);
+    // 1. Check if admin is still in the Residents collection
+    let admins = await Resident.find({ role: 'ADMIN' });
 
-    if (admins.length === 0) {
-      console.log('No admins to migrate.');
+    // 2. Also check if they are in the 'adminDB' collection inside ResidentsDB (from previous attempt)
+    // We can use a raw collection access since we changed the Admin model connection already
+    const oldAdminDB = appConnection.collection('adminDB');
+    const partiallyMigrated = await oldAdminDB.find({}).toArray();
+
+    const allAdmins = [...admins.map(a => a.toObject()), ...partiallyMigrated];
+    console.log(`Found ${allAdmins.length} admin(s) to move to AdminDB.`);
+
+    if (allAdmins.length === 0) {
+      console.log('No admins found in ResidentsDB to migrate.');
       process.exit(0);
     }
 
-    // 2. Prepare data for the new adminDB collection
-    const adminDocs = admins.map(admin => {
-      const doc = admin.toObject();
-      delete doc._id; // Let Mongo generate new _id or keep it?
-      // Keeping same _id might be better for refs, but some drivers don't like it across collections.
-      // However, residentId is our primary link.
-      return doc;
-    });
+    // 3. Insert into the NEW AdminDB
+    for (const adminData of allAdmins) {
+      // Use Admin model (which is now on adminConnection/AdminDB)
+      const exists = await Admin.findOne({ username: adminData.username });
+      if (!exists) {
+        await Admin.create(adminData);
+        console.log(`Successfully moved admin '${adminData.username}' to AdminDB.`);
+      } else {
+        console.log(`Admin '${adminData.username}' already exists in AdminDB.`);
+      }
+    }
 
-    // 3. Insert into adminDB
-    // Note: Admin model is already configured to use collection 'adminDB'
-    const insertResult = await Admin.insertMany(admins.map(a => a.toObject()));
-    console.log(`Successfully inserted ${insertResult.length} admins into 'adminDB' collection.`);
+    // 4. Cleanup old locations
+    await Resident.deleteMany({ role: 'ADMIN' });
+    await oldAdminDB.deleteMany({});
 
-    // 4. Delete from Resident collection
-    const deleteResult = await Resident.deleteMany({ role: 'ADMIN' });
-    console.log(`Successfully deleted ${deleteResult.deletedCount} admins from 'residents' collection.`);
-
-    console.log('Migration completed successfully.');
+    console.log('Migration to AdminDB completed successfully.');
   } catch (err) {
     console.error('Migration failed:', err);
   } finally {
@@ -49,7 +54,11 @@ async function migrate() {
   }
 }
 
-// Wait for connection to be ready
-appConnection.on('connected', () => {
-  migrate();
-});
+// Wait for both connections
+let connectedCount = 0;
+const checkReady = () => {
+    connectedCount++;
+    if (connectedCount === 2) migrate();
+};
+appConnection.on('connected', checkReady);
+adminConnection.on('connected', checkReady);

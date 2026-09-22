@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const { appConnection } = require('../config/db');
+const { adminConnection } = require('../config/db');
 
 const adminSchema = mongoose.Schema(
   {
@@ -73,6 +73,6 @@ adminSchema.pre('save', async function () {
   this.password = await bcrypt.hash(this.password, salt);
 });
 
-const Admin = appConnection.model('Admin', adminSchema);
+const Admin = adminConnection.model('Admin', adminSchema);
 
 module.exports = Admin;
