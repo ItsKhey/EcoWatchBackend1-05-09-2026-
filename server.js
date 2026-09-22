@@ -1,3 +1,7 @@
+const dns = require('dns');
+
+dns.setServers(['1.1.1.1', '1.0.0.1']);
+
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
