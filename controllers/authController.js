@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const Resident = require('../models/Resident');
+const Admin = require('../models/Admin');
 const PendingRegistration = require('../models/PendingRegistration');
 const PasswordResetOTP = require('../models/PasswordResetOTP');
 const generateToken = require('../utils/generateToken');
@@ -26,7 +27,8 @@ const registerResident = async (req, res, next) => {
     logInfo(req.requestId, 'AUTH', `Registration attempt for username: ${username}`);
 
     const userExists = await Resident.findOne({ username });
-    if (userExists) {
+    const adminExists = await Admin.findOne({ username });
+    if (userExists || adminExists) {
       res.status(400);
       throw new Error('Username is already taken');
     }
@@ -141,9 +143,9 @@ const forgotPassword = async (req, res, next) => {
 
     let resident;
     if (username) {
-      resident = await Resident.findOne({ username });
+      resident = await Resident.findOne({ username }) || await Admin.findOne({ username });
     } else {
-      resident = await Resident.findOne({ email });
+      resident = await Resident.findOne({ email }) || await Admin.findOne({ email });
     }
 
     // Even if resident not found, we don't leak it for security,
@@ -325,11 +327,12 @@ const changePassword = async (req, res, next) => {
   const { oldPassword, newPassword } = req.body;
 
   try {
-    const resident = await Resident.findById(req.resident._id);
+    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
+    const user = await Model.findById(req.resident._id);
 
-    if (resident && (await resident.matchPassword(oldPassword))) {
-      resident.password = newPassword;
-      await resident.save();
+    if (user && (await user.matchPassword(oldPassword))) {
+      user.password = newPassword;
+      await user.save();
       res.json({
         success: true,
         message: 'Password updated successfully',
@@ -352,26 +355,32 @@ const loginResident = async (req, res, next) => {
   try {
     logInfo(req.requestId, 'AUTH', `Login attempt for username: ${username}`);
 
-    const resident = await Resident.findOne({ username });
+    // Try finding in Resident collection first
+    let user = await Resident.findOne({ username });
 
-    if (resident && (await resident.matchPassword(password))) {
+    // If not found, check Admin collection
+    if (!user) {
+      user = await Admin.findOne({ username });
+    }
+
+    if (user && (await user.matchPassword(password))) {
       res.json({
         success: true,
-        token: generateToken(resident._id),
+        token: generateToken(user._id),
         resident: {
-          residentId: resident.residentId,
-          firstName: resident.firstName,
-          lastName: resident.lastName,
-          username: resident.username,
-          email: resident.email,
-          address: resident.address,
-          profileImage: resident.profileImage,
-          role: resident.role,
-          status: resident.status,
-          phoneNumber: resident.phoneNumber,
+          residentId: user.residentId,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+          email: user.email,
+          address: user.address,
+          profileImage: user.profileImage,
+          role: user.role,
+          status: user.status || 'AVAILABLE',
+          phoneNumber: user.phoneNumber || '',
         },
       });
-      logInfo(req.requestId, 'AUTH', `Login successful: ${resident.residentId}`);
+      logInfo(req.requestId, 'AUTH', `Login successful: ${user.residentId} (${user.role})`);
     } else {
       res.status(401);
       throw new Error('Invalid username or password');
@@ -386,24 +395,25 @@ const loginResident = async (req, res, next) => {
 // @access  Private
 const getResidentProfile = async (req, res, next) => {
   try {
-    const resident = await Resident.findById(req.resident._id).select('-password');
+    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
+    const user = await Model.findById(req.resident._id).select('-password');
 
-    if (resident) {
+    if (user) {
       res.json({
         success: true,
         resident: {
-          residentId: resident.residentId,
-          firstName: resident.firstName,
-          lastName: resident.lastName,
-          username: resident.username,
-          email: resident.email,
-          address: resident.address,
-          profileImage: resident.profileImage,
+          residentId: user.residentId,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+          email: user.email,
+          address: user.address,
+          profileImage: user.profileImage,
         }
       });
     } else {
       res.status(404);
-      throw new Error('Resident not found');
+      throw new Error('User not found');
     }
   } catch (error) {
     next(error);
@@ -418,45 +428,46 @@ const updateProfile = async (req, res, next) => {
   logProfileRequest(req, `controllerReached=true requestBodyFields=${Object.keys(req.body).join(',') || 'none'}`);
 
   try {
-    const resident = await Resident.findById(req.resident._id);
+    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
+    const user = await Model.findById(req.resident._id);
 
-    if (resident) {
+    if (user) {
       // If username is changing, check for uniqueness
-      if (username && username !== resident.username) {
-        const usernameExists = await Resident.findOne({ username });
+      if (username && username !== user.username) {
+        const usernameExists = await Resident.findOne({ username }) || await Admin.findOne({ username });
         if (usernameExists) {
           res.status(400);
           throw new Error('Username is already taken');
         }
-        resident.username = username;
+        user.username = username;
       }
 
-      resident.firstName = firstName || resident.firstName;
-      resident.lastName = lastName || resident.lastName;
-      resident.email = email || resident.email;
+      user.firstName = firstName || user.firstName;
+      user.lastName = lastName || user.lastName;
+      user.email = email || user.email;
       if (address !== undefined) {
-        resident.address = address;
+        user.address = address;
       }
 
       logProfileRequest(req, 'mongodbUpdateStarted=true');
-      const updatedResident = await resident.save();
+      const updatedUser = await user.save();
       logProfileRequest(req, 'mongodbUpdateResult=success');
 
       res.json({
         success: true,
         resident: {
-          residentId: updatedResident.residentId,
-          firstName: updatedResident.firstName,
-          lastName: updatedResident.lastName,
-          username: updatedResident.username,
-          email: updatedResident.email,
-          address: updatedResident.address,
-          profileImage: updatedResident.profileImage,
+          residentId: updatedUser.residentId,
+          firstName: updatedUser.firstName,
+          lastName: updatedUser.lastName,
+          username: updatedUser.username,
+          email: updatedUser.email,
+          address: updatedUser.address,
+          profileImage: updatedUser.profileImage,
         },
       });
     } else {
       res.status(404);
-      throw new Error('Resident not found');
+      throw new Error('User not found');
     }
   } catch (error) {
     logProfileRequest(req, `mongodbUpdateResult=failure error=${error.name || 'UpdateError'}`);
@@ -480,11 +491,12 @@ const updateProfileImage = async (req, res, next) => {
     const result = await uploadImage(req.file.buffer, 'ecowatch/profiles');
     logProfileRequest(req, 'cloudinaryUploadResult=success');
 
-    const resident = await Resident.findById(req.resident._id);
-    if (resident) {
-      resident.profileImage = result.secure_url;
+    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
+    const user = await Model.findById(req.resident._id);
+    if (user) {
+      user.profileImage = result.secure_url;
       logProfileRequest(req, 'mongodbUpdateStarted=true');
-      await resident.save();
+      await user.save();
       logProfileRequest(req, 'mongodbUpdateResult=success');
 
       res.json({
@@ -493,7 +505,7 @@ const updateProfileImage = async (req, res, next) => {
       });
     } else {
       res.status(404);
-      throw new Error('Resident not found');
+      throw new Error('User not found');
     }
   } catch (error) {
     logProfileRequest(req, `cloudinaryUploadResult=failure error=${error.message || error.name || 'UploadError'}`);
@@ -508,15 +520,16 @@ const resetLoggedInPassword = async (req, res, next) => {
   const { password } = req.body;
 
   try {
-    const resident = await Resident.findById(req.resident._id);
+    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
+    const user = await Model.findById(req.resident._id);
 
-    if (!resident) {
+    if (!user) {
       res.status(404);
-      throw new Error('Resident not found');
+      throw new Error('User not found');
     }
 
-    resident.password = password;
-    await resident.save();
+    user.password = password;
+    await user.save();
 
     res.json({
       success: true,
