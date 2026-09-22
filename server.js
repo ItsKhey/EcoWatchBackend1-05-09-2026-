@@ -20,21 +20,29 @@ if (!process.env.JWT_SECRET) {
   process.exit(1);
 }
 
+if (!process.env.ADMIN_DB_URI) {
+  console.warn('[WARNING] ADMIN_DB_URI is not set in environment variables! Please add ADMIN_DB_URI to Render environment variables.');
+}
+
 // connectDB() is replaced by importing the connection objects which start connecting immediately
 startReportCleanupJob();
 startHistoryCleanupJob();
 
-// Seed Admin Account only after both databases used by the migration are ready.
+// Seed Admin Account only after databases are ready.
 let seedStarted = false;
 const seedWhenReady = () => {
-  if (!seedStarted && appConnection.readyState === 1 && adminConnection.readyState === 1) {
+  if (!seedStarted) {
     seedStarted = true;
     seedAdmin();
   }
 };
 
-appConnection.once('open', seedWhenReady);
 adminConnection.once('open', seedWhenReady);
+appConnection.once('open', () => {
+  if (adminConnection.readyState === 1) {
+    seedWhenReady();
+  }
+});
 
 const app = express();
 
