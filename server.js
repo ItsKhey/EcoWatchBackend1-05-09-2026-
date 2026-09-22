@@ -24,10 +24,17 @@ if (!process.env.JWT_SECRET) {
 startReportCleanupJob();
 startHistoryCleanupJob();
 
-// Seed Admin Account
-appConnection.once('open', () => {
-  seedAdmin();
-});
+// Seed Admin Account only after both databases used by the migration are ready.
+let seedStarted = false;
+const seedWhenReady = () => {
+  if (!seedStarted && appConnection.readyState === 1 && adminConnection.readyState === 1) {
+    seedStarted = true;
+    seedAdmin();
+  }
+};
+
+appConnection.once('open', seedWhenReady);
+adminConnection.once('open', seedWhenReady);
 
 const app = express();
 

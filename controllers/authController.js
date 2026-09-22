@@ -12,6 +12,17 @@ const { uploadImage } = require('../services/cloudinaryService');
 const OTP_EXPIRY_MS = 5 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
 
+const findUserByIdentifier = async (identifier) => {
+  const normalizedIdentifier = identifier?.trim();
+  if (!normalizedIdentifier) return null;
+
+  return await Resident.findOne({
+    $or: [{ username: normalizedIdentifier }, { email: normalizedIdentifier }],
+  }) || await Admin.findOne({
+    $or: [{ username: normalizedIdentifier }, { email: normalizedIdentifier }],
+  });
+};
+
 const hashOtp = async (otp) => {
   const salt = await bcrypt.genSalt(10);
   return bcrypt.hash(otp, salt);
@@ -206,8 +217,8 @@ const verifyResetOTP = async (req, res, next) => {
 
     let targetEmail = email;
     if (!targetEmail && username) {
-      const resByUsername = await Resident.findOne({ username });
-      if (resByUsername) targetEmail = resByUsername.email;
+      const user = await findUserByIdentifier(username);
+      if (user) targetEmail = user.email;
       else targetEmail = 'unknown';
     }
 
@@ -294,21 +305,21 @@ const resetPassword = async (req, res, next) => {
       throw new Error('Invalid or expired OTP');
     }
 
-    let resident;
+    let user;
     if (email) {
-      resident = await Resident.findOne({ email });
+      user = await findUserByIdentifier(email);
     } else if (username) {
-      resident = await Resident.findOne({ username });
+      user = await findUserByIdentifier(username);
     }
 
-    if (!resident) {
+    if (!user) {
       await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
 
-    resident.password = password;
-    await resident.save();
+    user.password = password;
+    await user.save();
     await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
 
     res.json({
@@ -353,14 +364,19 @@ const loginResident = async (req, res, next) => {
   const { username, password } = req.body;
 
   try {
-    logInfo(req.requestId, 'AUTH', `Login attempt for username: ${username}`);
+    const identifier = username?.trim();
+    logInfo(req.requestId, 'AUTH', `Login attempt for username: ${identifier}`);
 
     // Try finding in Resident collection first
-    let user = await Resident.findOne({ username });
+    let user = await Resident.findOne({
+      $or: [{ username: identifier }, { email: identifier }],
+    });
 
     // If not found, check Admin collection
     if (!user) {
-      user = await Admin.findOne({ username });
+      user = await Admin.findOne({
+        $or: [{ username: identifier }, { email: identifier }],
+      });
     }
 
     if (user && (await user.matchPassword(password))) {
