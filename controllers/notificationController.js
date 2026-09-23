@@ -1,13 +1,19 @@
-const Notification = require('../models/Notification');
-const TrashNotification = require('../models/TrashNotification');
+const notificationRepository =
+  require('../repositories/notificationRepository');
+
+const trashNotificationRepository =
+  require('../repositories/trashNotificationRepository');
 
 // @desc    Get all notifications for a resident
 // @route   GET /api/notifications/my-notifications
 // @access  Private
 const getMyNotifications = async (req, res, next) => {
   try {
-    const residentId = req.resident.residentId;
-    const notifications = await Notification.find({ residentId, isDeleted: false }).sort({ createdAt: -1 });
+    const notifications =
+      await notificationRepository.findAllByResidentId(
+        req.resident.residentId
+      );
+
     res.json(notifications);
   } catch (error) {
     next(error);
@@ -19,20 +25,29 @@ const getMyNotifications = async (req, res, next) => {
 // @access  Private
 const moveToTrash = async (req, res, next) => {
   try {
-    const notification = await Notification.findOne({ _id: req.params.id, residentId: req.resident.residentId });
-    if (!notification) {
+    const residentId = req.resident.residentId;
+    const notification = await notificationRepository.findById(
+      req.params.id
+    );
+
+    if (!notification || notification.resident_id !== residentId) {
       res.status(404);
       throw new Error('Notification not found');
     }
 
-    const trashData = notification.toObject();
-    await TrashNotification.create({
-      ...trashData,
-      isDeleted: true,
-      deletedAt: new Date()
-    });
+    const existingTrash =
+      await trashNotificationRepository.findByNotificationId(
+        notification.id,
+        residentId
+      );
 
-    await Notification.deleteOne({ _id: req.params.id });
+    if (!existingTrash) {
+      await trashNotificationRepository.createTrashNotification(
+        notification.id,
+        residentId
+      );
+    }
+
     res.json({ message: 'Notification moved to trash' });
   } catch (error) {
     next(error);
@@ -44,20 +59,23 @@ const moveToTrash = async (req, res, next) => {
 // @access  Private
 const restoreNotification = async (req, res, next) => {
   try {
-    const trashNotification = await TrashNotification.findOne({ _id: req.params.id, residentId: req.resident.residentId });
+    const residentId = req.resident.residentId;
+    const trashNotification =
+      await trashNotificationRepository.findByNotificationId(
+        req.params.id,
+        residentId
+      );
+
     if (!trashNotification) {
       res.status(404);
       throw new Error('Notification not found in trash');
     }
 
-    const notificationData = trashNotification.toObject();
-    await Notification.create({
-      ...notificationData,
-      isDeleted: false,
-      deletedAt: null
-    });
+    await trashNotificationRepository.deleteByNotificationId(
+      req.params.id,
+      residentId
+    );
 
-    await TrashNotification.deleteOne({ _id: req.params.id });
     res.json({ message: 'Notification restored' });
   } catch (error) {
     next(error);
@@ -69,19 +87,21 @@ const restoreNotification = async (req, res, next) => {
 // @access  Private
 const deleteNotification = async (req, res, next) => {
   try {
-    const notification = await Notification.findOne({ _id: req.params.id, residentId: req.resident.residentId })
-                        || await TrashNotification.findOne({ _id: req.params.id, residentId: req.resident.residentId });
+    const residentId = req.resident.residentId;
+    const notification = await notificationRepository.findById(
+      req.params.id
+    );
 
-    if (!notification) {
+    if (!notification || notification.resident_id !== residentId) {
       res.status(404);
       throw new Error('Notification not found');
     }
 
-    if (notification.constructor.modelName === 'Notification') {
-      await Notification.deleteOne({ _id: req.params.id });
-    } else {
-      await TrashNotification.deleteOne({ _id: req.params.id });
-    }
+    await notificationRepository.deleteById(req.params.id);
+    await trashNotificationRepository.deleteByNotificationId(
+      req.params.id,
+      residentId
+    );
 
     res.json({ message: 'Notification permanently deleted' });
   } catch (error) {
@@ -94,10 +114,10 @@ const deleteNotification = async (req, res, next) => {
 // @access  Private
 const markAllAsRead = async (req, res, next) => {
   try {
-    await Notification.updateMany(
-      { residentId: req.resident.residentId, isRead: false },
-      { isRead: true }
+    await notificationRepository.markAllAsRead(
+      req.resident.residentId
     );
+
     res.json({ message: 'All notifications marked as read' });
   } catch (error) {
     next(error);

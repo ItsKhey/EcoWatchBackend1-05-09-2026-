@@ -1,34 +1,29 @@
-const mongoose = require('mongoose');
+const { Pool } = require('pg');
 const dotenv = require('dotenv');
 
 dotenv.config();
 
-const options = {
-  // Add any specific Mongoose options here if needed
-};
-
-const authUri = process.env.MONGODB_URI;
-const appUri = process.env.RESIDENTS_DB_URI || authUri;
-const adminUri = process.env.ADMIN_DB_URI || appUri || authUri;
-
-if (!process.env.ADMIN_DB_URI) {
-  console.warn('[DATABASE WARNING] ADMIN_DB_URI is missing from environment variables! Falling back to available database URI.');
+if (!process.env.SUPABASE_DATABASE_URL) {
+  throw new Error(
+    '[DATABASE] SUPABASE_DATABASE_URL is missing from environment variables!'
+  );
 }
 
-const authConnection = mongoose.createConnection(authUri, options);
-const appConnection = mongoose.createConnection(appUri, options);
-const adminConnection = mongoose.createConnection(adminUri, options);
+const pool = new Pool({
+  connectionString: process.env.SUPABASE_DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
 
-authConnection.on('connected', () => console.log('[DATABASE] Auth DB Connected'));
-appConnection.on('connected', () => console.log('[DATABASE] App DB Connected'));
-adminConnection.on('connected', () => console.log('[DATABASE] Admin DB Connected'));
+pool.on('connect', () => {
+  console.log('[DATABASE] Supabase PostgreSQL connected');
+});
 
-authConnection.on('error', (err) => console.error(`[DATABASE] Auth DB Error: ${err}`));
-appConnection.on('error', (err) => console.error(`[DATABASE] App DB Error: ${err}`));
-adminConnection.on('error', (err) => console.error(`[DATABASE] Admin DB Error: ${err}`));
+pool.on('error', (err) => {
+  console.error('[DATABASE] PostgreSQL pool error:', err);
+});
 
 module.exports = {
-  authConnection,
-  appConnection,
-  adminConnection
+  pool
 };

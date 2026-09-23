@@ -1,45 +1,139 @@
 const bcrypt = require('bcryptjs');
-const Resident = require('../models/Resident');
-const Admin = require('../models/Admin');
-const PendingRegistration = require('../models/PendingRegistration');
-const PasswordResetOTP = require('../models/PasswordResetOTP');
+
+const {
+  findByIdentifier: findResidentByIdentifier,
+  findByResidentId,
+  findByUsername: findResidentByUsername,
+  findByEmail: findResidentByEmail,
+  createResident,
+  updateResident,
+  updatePassword: updateResidentPassword,
+} = require('../repositories/residentRepository');
+
+const {
+  findByIdentifier: findAdminByIdentifier,
+  findByAdminId,
+  findByUsername: findAdminByUsername,
+  findByEmail: findAdminByEmail,
+  updateAdmin,
+  updatePassword: updateAdminPassword,
+} = require('../repositories/adminRepository');
+
+const {
+  createPendingRegistration,
+  findByRegistrationId,
+  incrementAttempts: incrementRegistrationAttempts,
+  deleteByRegistrationId,
+} = require('../repositories/pendingRegistrationRepository');
+
+const {
+  createResetOTP,
+  findByEmail: findResetByEmail,
+  incrementAttempts: incrementResetAttempts,
+  deleteByEmail: deleteResetByEmail,
+} = require('../repositories/passwordResetRepository');
+
 const generateToken = require('../utils/generateToken');
-const { generateResidentId, generateRegistrationId, generateOTP } = require('../utils/generateId');
-const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/emailServices');
-const { logInfo, logError, logProfileRequest } = require('../utils/logger');
+const {
+  generateResidentId,
+  generateRegistrationId,
+  generateOTP,
+} = require('../utils/generateId');
+
+const {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+} = require('../services/emailServices');
+
+const {
+  logInfo,
+  logError,
+  logProfileRequest,
+} = require('../utils/logger');
+
 const { uploadImage } = require('../services/cloudinaryService');
 
 const OTP_EXPIRY_MS = 5 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
-
-const findUserByIdentifier = async (identifier) => {
-  const normalizedIdentifier = identifier?.trim();
-  if (!normalizedIdentifier) return null;
-
-  return await Resident.findOne({
-    $or: [{ username: normalizedIdentifier }, { email: normalizedIdentifier }],
-  }) || await Admin.findOne({
-    $or: [{ username: normalizedIdentifier }, { email: normalizedIdentifier }],
-  });
-};
 
 const hashOtp = async (otp) => {
   const salt = await bcrypt.genSalt(10);
   return bcrypt.hash(otp, salt);
 };
 
-// @desc    Register a new resident (Step 1: Create pending & send OTP)
-// @route   POST /api/auth/register
-// @access  Public
+const findUserByIdentifier = async (identifier) => {
+  const normalizedIdentifier = identifier?.trim();
+
+  if (!normalizedIdentifier) {
+    return null;
+  }
+
+  const resident = await findResidentByIdentifier(normalizedIdentifier);
+
+  if (resident) {
+    return {
+      ...resident,
+      accountType: 'RESIDENT',
+      residentId: resident.resident_id,
+    };
+  }
+
+  const admin = await findAdminByIdentifier(normalizedIdentifier);
+
+  if (admin) {
+    return {
+      ...admin,
+      accountType: 'ADMIN',
+      residentId: admin.admin_id,
+    };
+  }
+
+  return null;
+};
+
+const mapResidentResponse = (user) => ({
+  residentId: user.resident_id,
+  firstName: user.first_name,
+  lastName: user.last_name,
+  username: user.username,
+  email: user.email,
+  address: user.address || '',
+  profileImage: user.profile_image || '',
+});
+
+const mapLoginResponse = (user, isAdmin = false) => ({
+  residentId: isAdmin ? user.admin_id : user.resident_id,
+  firstName: user.first_name,
+  lastName: user.last_name,
+  username: user.username,
+  email: user.email,
+  address: user.address || '',
+  profileImage: user.profile_image || '',
+  role: user.role,
+  status: user.status || 'AVAILABLE',
+  phoneNumber: user.phone_number || '',
+});
+
 const registerResident = async (req, res, next) => {
-  const { firstName, lastName, username, email, password } = req.body;
+  const {
+    firstName,
+    lastName,
+    username,
+    email,
+    password,
+  } = req.body;
 
   try {
-    logInfo(req.requestId, 'AUTH', `Registration attempt for username: ${username}`);
+    logInfo(
+      req.requestId,
+      'AUTH',
+      `Registration attempt for username: ${username}`
+    );
 
-    const userExists = await Resident.findOne({ username });
-    const adminExists = await Admin.findOne({ username });
-    if (userExists || adminExists) {
+    const existingResident = await findResidentByUsername(username);
+    const existingAdmin = await findAdminByUsername(username);
+
+    if (existingResident || existingAdmin) {
       res.status(400);
       throw new Error('Username is already taken');
     }
@@ -47,34 +141,47 @@ const registerResident = async (req, res, next) => {
     const otp = generateOTP(4);
     const registrationId = generateRegistrationId();
     const hashedOtp = await hashOtp(otp);
+    const passwordHash = await bcrypt.hash(password, 10);
 
-    const pending = await PendingRegistration.create({
+    const pending = await createPendingRegistration({
       registrationId,
       firstName,
       lastName,
       username,
       email,
-      password,
-      otp: hashedOtp,
-      otpExpires: new Date(Date.now() + OTP_EXPIRY_MS),
+      passwordHash,
+      otpHash: hashedOtp,
+      expiresAt: new Date(Date.now() + OTP_EXPIRY_MS),
       attempts: 0,
     });
 
-    logInfo(req.requestId, 'AUTH', `Pending registration created: ${registrationId}`);
+    logInfo(
+      req.requestId,
+      'AUTH',
+      `Pending registration created: ${registrationId}`
+    );
 
     try {
       await sendVerificationEmail(email, otp, req.requestId);
-      logInfo(req.requestId, 'EMAIL', `Verification OTP sent to ${email}`);
+      logInfo(
+        req.requestId,
+        'EMAIL',
+        `Verification OTP sent to ${email}`
+      );
     } catch (err) {
-      logError(req.requestId, 'EMAIL', err.message || 'Verification email send failed');
-      await PendingRegistration.deleteOne({ registrationId });
+      logError(
+        req.requestId,
+        'EMAIL',
+        err.message || 'Verification email send failed'
+      );
+      await deleteByRegistrationId(registrationId);
       res.status(500);
       throw new Error('Email could not be sent');
     }
 
     res.status(201).json({
       success: true,
-      registrationId: pending.registrationId,
+      registrationId: pending.registration_id,
       message: 'OTP sent to email',
     });
   } catch (error) {
@@ -82,60 +189,80 @@ const registerResident = async (req, res, next) => {
   }
 };
 
-// @desc    Verify OTP and create Resident (Step 2)
-// @route   POST /api/auth/verify-otp
-// @access  Public
 const verifyOTP = async (req, res, next) => {
   const { registrationId, otp } = req.body;
 
   try {
-    logInfo(req.requestId, 'AUTH', `Verification attempt for REG ID: ${registrationId}`);
+    logInfo(
+      req.requestId,
+      'AUTH',
+      `Verification attempt for REG ID: ${registrationId}`
+    );
 
-    const pending = await PendingRegistration.findOne({ registrationId });
+    const pending = await findByRegistrationId(registrationId);
 
     if (!pending) {
       res.status(404);
       throw new Error('Registration session expired or not found');
     }
 
-    if (pending.otpExpires < Date.now()) {
-      await pending.deleteOne();
+    if (
+      !pending.expires_at ||
+      new Date(pending.expires_at).getTime() < Date.now()
+    ) {
+      await deleteByRegistrationId(registrationId);
       res.status(400);
       throw new Error('OTP has expired');
     }
 
-    const isMatch = await bcrypt.compare(otp, pending.otp);
+    const isMatch = await bcrypt.compare(otp, pending.otp_hash);
 
     if (!isMatch) {
-      pending.attempts += 1;
-      await pending.save();
+      const updatedPending =
+        await incrementRegistrationAttempts(registrationId);
 
-      if (pending.attempts >= MAX_OTP_ATTEMPTS) {
-        await pending.deleteOne();
+      if (
+        updatedPending &&
+        updatedPending.attempts >= MAX_OTP_ATTEMPTS
+      ) {
+        await deleteByRegistrationId(registrationId);
         res.status(400);
-        throw new Error('Too many failed attempts. Please register again.');
+        throw new Error(
+          'Too many failed attempts. Please register again.'
+        );
       }
 
       res.status(400);
       throw new Error('Invalid OTP');
     }
 
-    const resident = await Resident.create({
+    const resident = await createResident({
       residentId: generateResidentId(),
-      firstName: pending.firstName,
-      lastName: pending.lastName,
+      firstName: pending.first_name,
+      lastName: pending.last_name,
       username: pending.username,
       email: pending.email,
-      password: pending.password,
+      passwordHash: pending.password_hash,
+      address: '',
+      profileImage: '',
+      isVerified: true,
+      role: 'RESIDENT',
+      status: 'AVAILABLE',
+      phoneNumber: '',
+      createdById: 'SYSTEM',
     });
 
-    logInfo(req.requestId, 'AUTH', `Resident created: ${resident.residentId}`);
+    logInfo(
+      req.requestId,
+      'AUTH',
+      `Resident created: ${resident.resident_id}`
+    );
 
-    await pending.deleteOne();
+    await deleteByRegistrationId(registrationId);
 
     res.status(201).json({
       success: true,
-      residentId: resident.residentId,
+      residentId: resident.resident_id,
       message: 'Account verified and created successfully',
     });
   } catch (error) {
@@ -152,54 +279,70 @@ const forgotPassword = async (req, res, next) => {
       throw new Error('Username or Email is required');
     }
 
-    let resident;
+    let user = null;
+
     if (username) {
-      resident = await Resident.findOne({ username }) || await Admin.findOne({ username });
+      user =
+        await findResidentByUsername(username) ||
+        await findAdminByUsername(username);
     } else {
-      resident = await Resident.findOne({ email }) || await Admin.findOne({ email });
+      user =
+        await findResidentByEmail(email) ||
+        await findAdminByEmail(email);
     }
 
-    // Even if resident not found, we don't leak it for security,
-    // but we need an email to send to.
     let targetEmail;
-    if (resident) {
-      targetEmail = resident.email;
+
+    if (user) {
+      targetEmail = user.email;
     } else if (email) {
       targetEmail = email;
     } else {
-      // Username provided but not found, and no email provided
       res.json({
         success: true,
-        message: 'If an account exists for this username, a reset code has been sent.',
+        message:
+          'If an account exists for this username, a reset code has been sent.',
       });
       return;
     }
+
     const otp = generateOTP(4);
     const otpHash = await hashOtp(otp);
 
-    await PasswordResetOTP.deleteMany({ email: targetEmail });
+    await deleteResetByEmail(targetEmail);
 
-    const resetEntry = await PasswordResetOTP.create({
-      userId: resident ? resident._id : null,
+    const resetEntry = await createResetOTP({
+      userId: user
+        ? (user.resident_id || user.admin_id || null)
+        : null,
       email: targetEmail,
       otpHash,
-      otpExpires: new Date(Date.now() + OTP_EXPIRY_MS),
+      expiresAt: new Date(Date.now() + OTP_EXPIRY_MS),
       attempts: 0,
     });
 
     try {
       await sendPasswordResetEmail(targetEmail, otp, req.requestId);
-      logInfo(req.requestId, 'EMAIL', `Password reset OTP sent to ${targetEmail}`);
+      logInfo(
+        req.requestId,
+        'EMAIL',
+        `Password reset OTP sent to ${targetEmail}`
+      );
     } catch (err) {
-      logError(req.requestId, 'EMAIL', err.message || 'Password reset email send failed');
-      await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+      logError(
+        req.requestId,
+        'EMAIL',
+        err.message || 'Password reset email send failed'
+      );
+      await deleteResetByEmail(targetEmail);
       res.status(500);
       throw new Error('Unable to send password reset code');
     }
 
     res.json({
       success: true,
-      message: 'If an account exists for this email, a reset code has been sent.',
+      message:
+        'If an account exists for this email, a reset code has been sent.',
     });
   } catch (error) {
     next(error);
@@ -216,35 +359,43 @@ const verifyResetOTP = async (req, res, next) => {
     }
 
     let targetEmail = email;
+
     if (!targetEmail && username) {
       const user = await findUserByIdentifier(username);
-      if (user) targetEmail = user.email;
-      else targetEmail = 'unknown';
+      targetEmail = user ? user.email : 'unknown';
     }
 
-    const resetEntry = await PasswordResetOTP.findOne({ email: targetEmail });
+    const resetEntry = await findResetByEmail(targetEmail);
 
     if (!resetEntry) {
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
 
-    if (resetEntry.otpExpires < Date.now()) {
-      await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+    if (
+      !resetEntry.expires_at ||
+      new Date(resetEntry.expires_at).getTime() < Date.now()
+    ) {
+      await deleteResetByEmail(targetEmail);
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
 
-    const isMatch = await bcrypt.compare(otp, resetEntry.otpHash);
+    const isMatch = await bcrypt.compare(otp, resetEntry.otp_hash);
 
     if (!isMatch) {
-      resetEntry.attempts += 1;
-      await resetEntry.save();
+      const updatedEntry =
+        await incrementResetAttempts(targetEmail);
 
-      if (resetEntry.attempts >= MAX_OTP_ATTEMPTS) {
-        await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+      if (
+        updatedEntry &&
+        updatedEntry.attempts >= MAX_OTP_ATTEMPTS
+      ) {
+        await deleteResetByEmail(targetEmail);
         res.status(400);
-        throw new Error('Too many failed attempts. Please request a new reset code.');
+        throw new Error(
+          'Too many failed attempts. Please request a new reset code.'
+        );
       }
 
       res.status(400);
@@ -261,66 +412,115 @@ const verifyResetOTP = async (req, res, next) => {
 };
 
 const resetPassword = async (req, res, next) => {
-  const { email, username, otp, password } = req.body;
+  const {
+    email,
+    username,
+    otp,
+    password,
+  } = req.body;
 
   try {
     if ((!email && !username) || !otp || !password) {
       res.status(400);
-      throw new Error('Username/Email, OTP, and password are required');
+      throw new Error(
+        'Username/Email, OTP, and password are required'
+      );
     }
 
     let targetEmail = email;
+
     if (!targetEmail && username) {
-      const resByUsername = await Resident.findOne({ username });
-      if (resByUsername) targetEmail = resByUsername.email;
-      else targetEmail = 'unknown'; // Will fail otp check anyway
+      const user =
+        await findResidentByUsername(username) ||
+        await findAdminByUsername(username);
+      targetEmail = user ? user.email : 'unknown';
     }
 
-    const resetEntry = await PasswordResetOTP.findOne({ email: targetEmail });
+    const resetEntry = await findResetByEmail(targetEmail);
 
     if (!resetEntry) {
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
 
-    if (resetEntry.otpExpires < Date.now()) {
-      await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+    if (
+      !resetEntry.expires_at ||
+      new Date(resetEntry.expires_at).getTime() < Date.now()
+    ) {
+      await deleteResetByEmail(targetEmail);
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
 
-    const isMatch = await bcrypt.compare(otp, resetEntry.otpHash);
+    const isMatch = await bcrypt.compare(otp, resetEntry.otp_hash);
 
     if (!isMatch) {
-      resetEntry.attempts += 1;
-      await resetEntry.save();
+      const updatedEntry =
+        await incrementResetAttempts(targetEmail);
 
-      if (resetEntry.attempts >= MAX_OTP_ATTEMPTS) {
-        await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+      if (
+        updatedEntry &&
+        updatedEntry.attempts >= MAX_OTP_ATTEMPTS
+      ) {
+        await deleteResetByEmail(targetEmail);
         res.status(400);
-        throw new Error('Too many failed attempts. Please request a new reset code.');
+        throw new Error(
+          'Too many failed attempts. Please request a new reset code.'
+        );
       }
 
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
 
-    let user;
+    let user = null;
+    let accountType = null;
+
     if (email) {
-      user = await findUserByIdentifier(email);
+      const resident = await findResidentByEmail(email);
+
+      if (resident) {
+        user = resident;
+        accountType = 'RESIDENT';
+      } else {
+        const admin = await findAdminByEmail(email);
+
+        if (admin) {
+          user = admin;
+          accountType = 'ADMIN';
+        }
+      }
     } else if (username) {
-      user = await findUserByIdentifier(username);
+      const resident = await findResidentByUsername(username);
+
+      if (resident) {
+        user = resident;
+        accountType = 'RESIDENT';
+      } else {
+        const admin = await findAdminByUsername(username);
+
+        if (admin) {
+          user = admin;
+          accountType = 'ADMIN';
+        }
+      }
     }
 
     if (!user) {
-      await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+      await deleteResetByEmail(targetEmail);
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
 
-    user.password = password;
-    await user.save();
-    await PasswordResetOTP.deleteOne({ _id: resetEntry._id });
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    if (accountType === 'ADMIN') {
+      await updateAdminPassword(user.admin_id, passwordHash);
+    } else {
+      await updateResidentPassword(user.resident_id, passwordHash);
+    }
+
+    await deleteResetByEmail(targetEmail);
 
     res.json({
       success: true,
@@ -331,19 +531,28 @@ const resetPassword = async (req, res, next) => {
   }
 };
 
-// @desc    Change password (authenticated)
-// @route   POST /api/auth/change-password
-// @access  Private
 const changePassword = async (req, res, next) => {
   const { oldPassword, newPassword } = req.body;
 
   try {
-    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
-    const user = await Model.findById(req.resident._id);
+    const isAdmin = req.resident.role === 'ADMIN';
 
-    if (user && (await user.matchPassword(oldPassword))) {
-      user.password = newPassword;
-      await user.save();
+    const user = isAdmin
+      ? await findByAdminId(req.resident.admin_id)
+      : await findByResidentId(req.resident.resident_id);
+
+    if (
+      user &&
+      await bcrypt.compare(oldPassword, user.password_hash)
+    ) {
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+
+      if (isAdmin) {
+        await updateAdminPassword(user.admin_id, passwordHash);
+      } else {
+        await updateResidentPassword(user.resident_id, passwordHash);
+      }
+
       res.json({
         success: true,
         message: 'Password updated successfully',
@@ -357,98 +566,98 @@ const changePassword = async (req, res, next) => {
   }
 };
 
-// @desc    Auth resident & get token
-// @route   POST /api/auth/login
-// @access  Public
 const loginResident = async (req, res, next) => {
   const { username, password } = req.body;
 
   try {
     const identifier = username?.trim();
-    logInfo(req.requestId, 'AUTH', `Login attempt for username: ${identifier}`);
 
-    // Check the admin collection first so duplicate resident identifiers do not block admin login.
-    const admin = await Admin.findOne({
-      $or: [{ username: identifier }, { email: identifier }],
-    });
+    logInfo(
+      req.requestId,
+      'AUTH',
+      `Login attempt for username: ${identifier}`
+    );
 
-    if (admin && (await bcrypt.compare(password, admin.password))) {
+    const admin = await findAdminByIdentifier(identifier);
+
+    if (
+      admin &&
+      await bcrypt.compare(password, admin.password_hash)
+    ) {
       res.json({
         success: true,
-        token: generateToken(admin._id),
-        resident: {
-          residentId: admin.residentId,
-          firstName: admin.firstName,
-          lastName: admin.lastName,
-          username: admin.username,
-          email: admin.email,
-          address: admin.address,
-          profileImage: admin.profileImage,
-          role: admin.role,
-          status: admin.status || 'AVAILABLE',
-          phoneNumber: admin.phoneNumber || '',
-        },
+        token: generateToken(admin.admin_id),
+        resident: mapLoginResponse(admin, true),
       });
-      logInfo(req.requestId, 'AUTH', `Admin login successful: ${admin.residentId}`);
+
+      logInfo(
+        req.requestId,
+        'AUTH',
+        `Admin login successful: ${admin.admin_id}`
+      );
+
       return;
     }
 
     if (admin) {
-      logInfo(req.requestId, 'AUTH', `Admin login failed: invalid password for ${identifier}`);
+      logInfo(
+        req.requestId,
+        'AUTH',
+        `Admin login failed: invalid password for ${identifier}`
+      );
     }
 
-    const user = await Resident.findOne({
-      $or: [{ username: identifier }, { email: identifier }],
-    });
+    const resident = await findResidentByIdentifier(identifier);
 
-    if (user && (await user.matchPassword(password))) {
+    if (
+      resident &&
+      await bcrypt.compare(password, resident.password_hash)
+    ) {
       res.json({
         success: true,
-        token: generateToken(user._id),
-        resident: {
-          residentId: user.residentId,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          username: user.username,
-          email: user.email,
-          address: user.address,
-          profileImage: user.profileImage,
-          role: user.role,
-          status: user.status || 'AVAILABLE',
-          phoneNumber: user.phoneNumber || '',
-        },
+        token: generateToken(resident.resident_id),
+        resident: mapLoginResponse(resident, false),
       });
-      logInfo(req.requestId, 'AUTH', `Login successful: ${user.residentId} (${user.role})`);
-    } else {
-      logInfo(req.requestId, 'AUTH', `Login failed: invalid credentials for ${identifier}`);
-      res.status(401);
-      throw new Error('Invalid username or password');
+
+      logInfo(
+        req.requestId,
+        'AUTH',
+        `Login successful: ${resident.resident_id} (${resident.role})`
+      );
+
+      return;
     }
+
+    logInfo(
+      req.requestId,
+      'AUTH',
+      `Login failed: invalid credentials for ${identifier}`
+    );
+
+    res.status(401);
+    throw new Error('Invalid username or password');
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Get current resident profile
-// @route   GET /api/auth/me
-// @access  Private
 const getResidentProfile = async (req, res, next) => {
   try {
-    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
-    const user = await Model.findById(req.resident._id).select('-password');
+    const isAdmin = req.resident.role === 'ADMIN';
+
+    const user = isAdmin
+      ? await findByAdminId(req.resident.admin_id)
+      : await findByResidentId(req.resident.resident_id);
 
     if (user) {
       res.json({
         success: true,
-        resident: {
-          residentId: user.residentId,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          username: user.username,
-          email: user.email,
-          address: user.address,
-          profileImage: user.profileImage,
-        }
+        resident: mapResidentResponse({
+          ...user,
+          resident_id: isAdmin
+            ? user.admin_id
+            : user.resident_id,
+        }),
       });
     } else {
       res.status(404);
@@ -459,66 +668,88 @@ const getResidentProfile = async (req, res, next) => {
   }
 };
 
-// @desc    Update resident profile
-// @route   PATCH /api/auth/profile
-// @access  Private
 const updateProfile = async (req, res, next) => {
-  const { firstName, lastName, username, email, address } = req.body;
-  logProfileRequest(req, `controllerReached=true requestBodyFields=${Object.keys(req.body).join(',') || 'none'}`);
+  const {
+    firstName,
+    lastName,
+    username,
+    email,
+    address,
+  } = req.body;
+
+  logProfileRequest(
+    req,
+    `controllerReached=true requestBodyFields=${
+      Object.keys(req.body).join(',') || 'none'
+    }`
+  );
 
   try {
-    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
-    const user = await Model.findById(req.resident._id);
+    const isAdmin = req.resident.role === 'ADMIN';
 
-    if (user) {
-      // If username is changing, check for uniqueness
-      if (username && username !== user.username) {
-        const usernameExists = await Resident.findOne({ username }) || await Admin.findOne({ username });
-        if (usernameExists) {
-          res.status(400);
-          throw new Error('Username is already taken');
-        }
-        user.username = username;
-      }
+    const currentUser = isAdmin
+      ? await findByAdminId(req.resident.admin_id)
+      : await findByResidentId(req.resident.resident_id);
 
-      user.firstName = firstName || user.firstName;
-      user.lastName = lastName || user.lastName;
-      user.email = email || user.email;
-      if (address !== undefined) {
-        user.address = address;
-      }
-
-      logProfileRequest(req, 'mongodbUpdateStarted=true');
-      const updatedUser = await user.save();
-      logProfileRequest(req, 'mongodbUpdateResult=success');
-
-      res.json({
-        success: true,
-        resident: {
-          residentId: updatedUser.residentId,
-          firstName: updatedUser.firstName,
-          lastName: updatedUser.lastName,
-          username: updatedUser.username,
-          email: updatedUser.email,
-          address: updatedUser.address,
-          profileImage: updatedUser.profileImage,
-        },
-      });
-    } else {
+    if (!currentUser) {
       res.status(404);
       throw new Error('User not found');
     }
+
+    if (username && username !== currentUser.username) {
+      const residentWithUsername =
+        await findResidentByUsername(username);
+      const adminWithUsername =
+        await findAdminByUsername(username);
+
+      if (residentWithUsername || adminWithUsername) {
+        res.status(400);
+        throw new Error('Username is already taken');
+      }
+    }
+
+    const updates = {};
+
+    if (firstName) updates.firstName = firstName;
+    if (lastName) updates.lastName = lastName;
+    if (username) updates.username = username;
+    if (email) updates.email = email;
+    if (address !== undefined) updates.address = address;
+
+    logProfileRequest(req, 'postgresUpdateStarted=true');
+
+    const updatedUser = isAdmin
+      ? await updateAdmin(currentUser.admin_id, updates)
+      : await updateResident(currentUser.resident_id, updates);
+
+    logProfileRequest(req, 'postgresUpdateResult=success');
+
+    res.json({
+      success: true,
+      resident: mapResidentResponse({
+        ...updatedUser,
+        resident_id: isAdmin
+          ? updatedUser.admin_id
+          : updatedUser.resident_id,
+      }),
+    });
   } catch (error) {
-    logProfileRequest(req, `mongodbUpdateResult=failure error=${error.name || 'UpdateError'}`);
+    logProfileRequest(
+      req,
+      `postgresUpdateResult=failure error=${
+        error.name || 'UpdateError'
+      }`
+    );
+
     return next(error);
   }
 };
 
-// @desc    Update resident profile image
-// @route   PATCH /api/auth/profile/image
-// @access  Private
 const updateProfileImage = async (req, res, next) => {
-  logProfileRequest(req, `controllerReached=true multipartFilePresent=${Boolean(req.file)}`);
+  logProfileRequest(
+    req,
+    `controllerReached=true multipartFilePresent=${Boolean(req.file)}`
+  );
 
   try {
     if (!req.file) {
@@ -527,48 +758,73 @@ const updateProfileImage = async (req, res, next) => {
     }
 
     logProfileRequest(req, 'cloudinaryUploadStarted=true');
-    const result = await uploadImage(req.file.buffer, 'ecowatch/profiles');
+
+    const result = await uploadImage(
+      req.file.buffer,
+      'ecowatch/profiles'
+    );
+
     logProfileRequest(req, 'cloudinaryUploadResult=success');
 
-    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
-    const user = await Model.findById(req.resident._id);
-    if (user) {
-      user.profileImage = result.secure_url;
-      logProfileRequest(req, 'mongodbUpdateStarted=true');
-      await user.save();
-      logProfileRequest(req, 'mongodbUpdateResult=success');
+    const isAdmin = req.resident.role === 'ADMIN';
 
-      res.json({
-        success: true,
-        profileImage: result.secure_url,
-      });
-    } else {
+    const currentUser = isAdmin
+      ? await findByAdminId(req.resident.admin_id)
+      : await findByResidentId(req.resident.resident_id);
+
+    if (!currentUser) {
       res.status(404);
       throw new Error('User not found');
     }
+
+    const updatedUser = isAdmin
+      ? await updateAdmin(currentUser.admin_id, {
+          profileImage: result.secure_url,
+        })
+      : await updateResident(currentUser.resident_id, {
+          profileImage: result.secure_url,
+        });
+
+    logProfileRequest(req, 'postgresUpdateResult=success');
+
+    res.json({
+      success: true,
+      profileImage: updatedUser.profile_image,
+    });
   } catch (error) {
-    logProfileRequest(req, `cloudinaryUploadResult=failure error=${error.message || error.name || 'UploadError'}`);
+    logProfileRequest(
+      req,
+      `cloudinaryUploadResult=failure error=${
+        error.message || error.name || 'UploadError'
+      }`
+    );
+
     return next(error);
   }
 };
 
-// @desc    Reset password for logged-in resident (No OTP required per UI request)
-// @route   PATCH /api/auth/reset-logged-in
-// @access  Private
 const resetLoggedInPassword = async (req, res, next) => {
   const { password } = req.body;
 
   try {
-    const Model = req.resident.role === 'ADMIN' ? Admin : Resident;
-    const user = await Model.findById(req.resident._id);
+    const isAdmin = req.resident.role === 'ADMIN';
+
+    const user = isAdmin
+      ? await findByAdminId(req.resident.admin_id)
+      : await findByResidentId(req.resident.resident_id);
 
     if (!user) {
       res.status(404);
       throw new Error('User not found');
     }
 
-    user.password = password;
-    await user.save();
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    if (isAdmin) {
+      await updateAdminPassword(user.admin_id, passwordHash);
+    } else {
+      await updateResidentPassword(user.resident_id, passwordHash);
+    }
 
     res.json({
       success: true,

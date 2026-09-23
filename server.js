@@ -6,12 +6,10 @@ const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const morgan = require('morgan');
-const { authConnection, appConnection, adminConnection } = require('./config/db');
-const seedAdmin = require('./utils/seedAdmin');
 const { logger } = require('./utils/logger');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
-const { startReportCleanupJob } = require('./services/reportCleanupService');
 const { startHistoryCleanupJob } = require('./services/historyCleanupService');
+const { startReportCleanupJob } = require('./services/reportCleanupService');
 
 dotenv.config();
 
@@ -19,30 +17,6 @@ if (!process.env.JWT_SECRET) {
   console.error('[FATAL] JWT_SECRET is not configured.');
   process.exit(1);
 }
-
-if (!process.env.ADMIN_DB_URI) {
-  console.warn('[WARNING] ADMIN_DB_URI is not set in environment variables! Please add ADMIN_DB_URI to Render environment variables.');
-}
-
-// connectDB() is replaced by importing the connection objects which start connecting immediately
-startReportCleanupJob();
-startHistoryCleanupJob();
-
-// Seed Admin Account only after databases are ready.
-let seedStarted = false;
-const seedWhenReady = () => {
-  if (!seedStarted) {
-    seedStarted = true;
-    seedAdmin();
-  }
-};
-
-adminConnection.once('open', seedWhenReady);
-appConnection.once('open', () => {
-  if (adminConnection.readyState === 1) {
-    seedWhenReady();
-  }
-});
 
 const app = express();
 
@@ -74,6 +48,8 @@ app.use('/api/admin', require('./routes/adminRoutes'));
 app.use(notFound);
 app.use(errorHandler);
 
+startHistoryCleanupJob();
+startReportCleanupJob();
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {

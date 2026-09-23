@@ -1,15 +1,25 @@
-const Report = require('../models/Report');
-const Notification = require('../models/Notification');
-const History = require('../models/History');
-const Resident = require('../models/Resident');
-const { generateResidentId } = require('../utils/generateId');
+const reportRepository =
+  require('../repositories/reportRepository');
+
+const notificationRepository =
+  require('../repositories/notificationRepository');
+
+const historyRepository =
+  require('../repositories/historyRepository');
+
+const residentRepository =
+  require('../repositories/residentRepository');
+
+const { generateResidentId } =
+  require('../utils/generateId');
 
 // @desc    Get all reports for admin
 // @route   GET /api/admin/reports
 // @access  Private/Admin
 const getAllReports = async (req, res, next) => {
   try {
-    const reports = await Report.find({}).sort({ createdAt: -1 });
+    const reports = await reportRepository.findAll();
+
     res.json(reports);
   } catch (error) {
     next(error);
@@ -20,40 +30,66 @@ const getAllReports = async (req, res, next) => {
 // @route   POST /api/admin/reports/:id/assign
 // @access  Private/Admin
 const assignPersonnel = async (req, res, next) => {
-  const { assignedPersonnelIds, priority, handledById } = req.body;
+  const {
+    assignedPersonnelIds,
+    priority,
+    handledById
+  } = req.body;
 
   try {
-    const report = await Report.findById(req.params.id);
+    const report =
+      await reportRepository.findByReportId(
+        req.params.id
+      );
+
     if (!report) {
       res.status(404);
       throw new Error('Report not found');
     }
 
-    report.assignedPersonnelIds = assignedPersonnelIds;
-    report.priority = priority || report.priority;
-    report.handledById = handledById;
-    report.status = 'Assigned';
+    const oldStatus = report.status;
 
-    const updatedReport = await report.save();
+    const updatedReport =
+      await reportRepository.updateReport(
+        report.report_id,
+        {
+          assignedPersonnelIds:
+            assignedPersonnelIds || [],
 
-    // Notify personnel
-    for (const pId of assignedPersonnelIds) {
-      await Notification.create({
+          priority:
+            priority || report.priority,
+
+          handledById:
+            handledById || null,
+
+          status: 'In Progress'
+        }
+      );
+
+    // Notify assigned personnel
+    for (const pId of assignedPersonnelIds || []) {
+      await notificationRepository.createNotification({
         residentId: pId,
+        reportId: report.report_id,
         title: 'New Task Assigned',
-        message: `You have been assigned to report: ${report.title}`,
-        type: 'TASK_ASSIGNED',
+        message:
+          `You have been assigned to report: ${report.title}`,
       });
     }
 
-    // Log to history
-    await History.create({
-      residentId: report.residentId,
-      reportId: report.reportId,
+    // Log history
+    await historyRepository.createHistory({
+      residentId: report.resident_id,
+      reportId: report.report_id,
       action: 'ASSIGNED',
-      oldStatus: 'Pending',
-      newStatus: 'Assigned',
-      description: `Report assigned to ${assignedPersonnelIds.length} personnel with ${priority} priority.`,
+      oldStatus,
+      newStatus: 'In Progress',
+      description:
+        `Report assigned to ${
+          (assignedPersonnelIds || []).length
+        } personnel with ${
+          priority || report.priority
+        } priority.`,
     });
 
     res.json(updatedReport);
@@ -67,7 +103,11 @@ const assignPersonnel = async (req, res, next) => {
 // @access  Private/Admin
 const getPersonnel = async (req, res, next) => {
   try {
-    const personnel = await Resident.find({ role: 'Environmental Services Personnel' });
+    const personnel =
+      await residentRepository.findByRole(
+        'Environmental Services Personnel'
+      );
+
     res.json(personnel);
   } catch (error) {
     next(error);
@@ -78,36 +118,40 @@ const getPersonnel = async (req, res, next) => {
 // @route   POST /api/admin/create-personnel
 // @access  Private/Admin
 const createPersonnel = async (req, res, next) => {
-  const { firstName, lastName, username, email, password, phoneNumber } = req.body;
+  const {
+    firstName,
+    lastName,
+    username,
+    email,
+    password,
+    phoneNumber
+  } = req.body;
 
   try {
-    const userExists = await Resident.findOne({ username });
+    const userExists =
+      await residentRepository.findByUsername(
+        username
+      );
+
     if (userExists) {
       res.status(400);
       throw new Error('Username is already taken');
     }
 
-    const personnel = await Resident.create({
-      residentId: generateResidentId(),
-      firstName,
-      lastName,
-      username,
-      email,
-      password,
-      phoneNumber,
-      role: 'Environmental Services Personnel',
-      isVerified: true,
-      createdById: req.resident.residentId,
-    });
+    /*
+     * PASSWORD HASHING
+     *
+     * Do not insert the raw password here.
+     *
+     * We need to use the same password-hashing
+     * mechanism currently used by the resident
+     * registration/authentication system.
+     */
 
-    res.status(201).json({
-      success: true,
-      message: 'Personnel account created successfully',
-      personnel: {
-        residentId: personnel.residentId,
-        username: personnel.username,
-      },
-    });
+    throw new Error(
+      'Personnel creation migration requires the existing password hashing implementation.'
+    );
+
   } catch (error) {
     next(error);
   }
@@ -116,36 +160,55 @@ const createPersonnel = async (req, res, next) => {
 // @desc    Approve a report completion
 // @route   POST /api/admin/reports/:id/approve
 // @access  Private/Admin
-const approveReportCompletion = async (req, res, next) => {
+const approveReportCompletion = async (
+  req,
+  res,
+  next
+) => {
   try {
-    const report = await Report.findById(req.params.id);
+    const report =
+      await reportRepository.findByReportId(
+        req.params.id
+      );
+
     if (!report) {
       res.status(404);
       throw new Error('Report not found');
     }
 
     const oldStatus = report.status;
-    report.status = 'Completed';
-    report.resolvedAt = new Date().toISOString();
-    await report.save();
 
-    await Notification.create({
-      residentId: report.residentId,
+    await reportRepository.updateReport(
+      report.report_id,
+      {
+        status: 'Completed',
+        resolvedAt: new Date()
+      }
+    );
+
+    await notificationRepository.createNotification({
+      residentId: report.resident_id,
+      reportId: report.report_id,
       title: 'Report Completed',
-      message: `Your waste report has been completed. ID: ${report.reportId}`,
-      type: 'REPORT_UPDATE'
+      message:
+        `Your waste report has been completed. ID: ${report.report_id}`
     });
 
-    await History.create({
-      residentId: report.residentId,
-      reportId: report.reportId,
+    await historyRepository.createHistory({
+      residentId: report.resident_id,
+      reportId: report.report_id,
       action: 'COMPLETED',
-      oldStatus: oldStatus,
+      oldStatus,
       newStatus: 'Completed',
-      description: `Admin approved cleanup for report '${report.title}'.`
+      description:
+        `Admin approved cleanup for report '${report.title}'.`
     });
 
-    res.json({ message: 'Report completion approved and notification sent.' });
+    res.json({
+      message:
+        'Report completion approved and notification sent.'
+    });
+
   } catch (error) {
     next(error);
   }
