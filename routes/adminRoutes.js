@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const {
+  loginAdmin,
   getAllReports,
   assignPersonnel,
   getPersonnel,
@@ -10,7 +11,9 @@ const {
 const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
 
-// All routes here are restricted to logged-in Admins
+router.post('/login', loginAdmin);
+
+// All routes except login are restricted to logged-in Admins
 router.use(protect);
 router.use(admin);
 

@@ -1,3 +1,5 @@
+const bcrypt = require('bcryptjs');
+
 const reportRepository =
   require('../repositories/reportRepository');
 
@@ -12,6 +14,53 @@ const residentRepository =
 
 const { generateResidentId } =
   require('../utils/generateId');
+
+const { findByIdentifier } =
+  require('../repositories/adminRepository');
+
+const generateToken = require('../utils/generateToken');
+
+// @desc    Authenticate an admin
+// @route   POST /api/admin/login
+// @access  Public
+const loginAdmin = async (req, res, next) => {
+  const { username, password } = req.body;
+
+  try {
+    const identifier = username?.trim();
+    const admin = await findByIdentifier(identifier);
+
+    if (
+      !admin ||
+      admin.role !== 'ADMIN' ||
+      !await bcrypt.compare(password, admin.password_hash)
+    ) {
+      res.status(401);
+      throw new Error('Invalid username or password');
+    }
+
+    res.json({
+      success: true,
+      token: generateToken(admin.admin_id, {
+        role: admin.role,
+      }),
+      resident: {
+        residentId: admin.admin_id,
+        firstName: admin.first_name,
+        lastName: admin.last_name,
+        username: admin.username,
+        email: admin.email,
+        address: admin.address || '',
+        profileImage: admin.profile_image || '',
+        role: admin.role,
+        status: admin.status || 'AVAILABLE',
+        phoneNumber: admin.phone_number || '',
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 // @desc    Get all reports for admin
 // @route   GET /api/admin/reports
@@ -215,6 +264,7 @@ const approveReportCompletion = async (
 };
 
 module.exports = {
+  loginAdmin,
   getAllReports,
   assignPersonnel,
   getPersonnel,
