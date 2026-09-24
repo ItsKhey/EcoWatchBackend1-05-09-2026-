@@ -6,10 +6,9 @@ const historyRepository =
 // @access  Private
 const getMyHistory = async (req, res, next) => {
   try {
+    const residentId = req.resident.residentId || req.resident.resident_id;
     const history =
-      await historyRepository.findByResidentId(
-        req.resident.residentId
-      );
+      await historyRepository.findByResidentId(residentId);
 
     res.json(history);
   } catch (error) {
@@ -23,6 +22,7 @@ const getMyHistory = async (req, res, next) => {
 const bulkSoftDeleteHistory = async (req, res, next) => {
   try {
     const { ids } = req.body;
+    const residentId = req.resident.residentId || req.resident.resident_id;
 
     if (!ids || !Array.isArray(ids)) {
       return res.status(400).json({
@@ -33,7 +33,7 @@ const bulkSoftDeleteHistory = async (req, res, next) => {
     for (const id of ids) {
       await historyRepository.softDeleteForResident(
         id,
-        req.resident.residentId
+        residentId
       );
     }
 
@@ -51,6 +51,7 @@ const bulkSoftDeleteHistory = async (req, res, next) => {
 const bulkRestoreHistory = async (req, res, next) => {
   try {
     const { ids } = req.body;
+    const residentId = req.resident.residentId || req.resident.resident_id;
 
     if (!ids || !Array.isArray(ids)) {
       return res.status(400).json({
@@ -61,7 +62,7 @@ const bulkRestoreHistory = async (req, res, next) => {
     for (const id of ids) {
       await historyRepository.restoreForResident(
         id,
-        req.resident.residentId
+        residentId
       );
     }
 
@@ -79,6 +80,7 @@ const bulkRestoreHistory = async (req, res, next) => {
 const bulkDeleteHistory = async (req, res, next) => {
   try {
     const { ids } = req.body;
+    const residentId = req.resident.residentId || req.resident.resident_id;
 
     if (!ids || !Array.isArray(ids)) {
       return res.status(400).json({
@@ -89,7 +91,7 @@ const bulkDeleteHistory = async (req, res, next) => {
     for (const id of ids) {
       await historyRepository.deleteByIdForResident(
         id,
-        req.resident.residentId
+        residentId
       );
     }
 

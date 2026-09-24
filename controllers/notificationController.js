@@ -9,10 +9,9 @@ const trashNotificationRepository =
 // @access  Private
 const getMyNotifications = async (req, res, next) => {
   try {
+    const residentId = req.resident.residentId || req.resident.resident_id;
     const notifications =
-      await notificationRepository.findAllByResidentId(
-        req.resident.residentId
-      );
+      await notificationRepository.findAllByResidentId(residentId);
 
     res.json(notifications);
   } catch (error) {
@@ -25,7 +24,7 @@ const getMyNotifications = async (req, res, next) => {
 // @access  Private
 const moveToTrash = async (req, res, next) => {
   try {
-    const residentId = req.resident.residentId;
+    const residentId = req.resident.residentId || req.resident.resident_id;
     const notification = await notificationRepository.findById(
       req.params.id
     );
@@ -59,7 +58,7 @@ const moveToTrash = async (req, res, next) => {
 // @access  Private
 const restoreNotification = async (req, res, next) => {
   try {
-    const residentId = req.resident.residentId;
+    const residentId = req.resident.residentId || req.resident.resident_id;
     const trashNotification =
       await trashNotificationRepository.findByNotificationId(
         req.params.id,
@@ -87,7 +86,7 @@ const restoreNotification = async (req, res, next) => {
 // @access  Private
 const deleteNotification = async (req, res, next) => {
   try {
-    const residentId = req.resident.residentId;
+    const residentId = req.resident.residentId || req.resident.resident_id;
     const notification = await notificationRepository.findById(
       req.params.id
     );
@@ -114,9 +113,8 @@ const deleteNotification = async (req, res, next) => {
 // @access  Private
 const markAllAsRead = async (req, res, next) => {
   try {
-    await notificationRepository.markAllAsRead(
-      req.resident.residentId
-    );
+    const residentId = req.resident.residentId || req.resident.resident_id;
+    await notificationRepository.markAllAsRead(residentId);
 
     res.json({ message: 'All notifications marked as read' });
   } catch (error) {

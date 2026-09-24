@@ -8,7 +8,12 @@ const errorHandler = (err, req, res, next) => {
   let statusCode = res.statusCode === 200 ? 500 : res.statusCode;
   let message = err.message;
 
- // Handle invalid request identifiers
+  // Mask raw PostgreSQL connection/auth errors into user-friendly message
+  if (err.message && (err.message.includes('password authentication failed') || err.message.includes('ECONNREFUSED'))) {
+    message = 'Database connection error. Please check server database credentials.';
+  }
+
+  // Handle invalid request identifiers
   if (err.name === 'CastError' && err.kind === 'ObjectId') {
     statusCode = 404;
     message = 'Resource not found';

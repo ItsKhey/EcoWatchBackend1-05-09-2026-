@@ -60,7 +60,12 @@ const protect = async (req, res, next) => {
        * Keep req.resident for compatibility with the
        * existing controllers/routes.
        */
-      req.resident = user;
+      req.resident = {
+        ...user,
+        residentId: user.resident_id || user.admin_id || user.residentId,
+        resident_id: user.resident_id || user.admin_id || user.residentId,
+        admin_id: user.admin_id || user.resident_id || user.adminId
+      };
 
       logProfileRequest(
         req,

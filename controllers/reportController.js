@@ -89,10 +89,11 @@ const reportInput = (report, overrides = {}) => ({
 });
 
 const createReport = async (req, res, next) => {
-  const { title, category, description, latitude, longitude } = req.body;
+  const { title, description, latitude, longitude } = req.body;
+  const category = req.body.category || req.body.waste_type || req.body.wasteType || '';
 
   try {
-    const residentId = req.resident.residentId;
+    const residentId = req.resident.residentId || req.resident.resident_id;
     logInfo(req.requestId, 'REPORT', `New report submission from resident: ${residentId}`);
 
     if (!req.file) {
@@ -107,8 +108,8 @@ const createReport = async (req, res, next) => {
       title,
       category,
       description,
-      latitude: latitude !== undefined ? latitude : null,
-      longitude: longitude !== undefined ? longitude : null,
+      latitude: latitude !== undefined && latitude !== '' ? latitude : null,
+      longitude: longitude !== undefined && longitude !== '' ? longitude : null,
       imageUrl: result.secure_url,
     });
 
@@ -380,11 +381,13 @@ const bulkDeleteReports = async (req, res, next) => {
 };
 
 const updateReport = async (req, res, next) => {
-  const { title, category, description, latitude, longitude } = req.body;
+  const { title, description, latitude, longitude } = req.body;
+  const category = req.body.category || req.body.waste_type || req.body.wasteType;
+  const residentId = req.resident.residentId || req.resident.resident_id;
 
   try {
     const report = await reportRepository.findByReportId(req.params.id);
-    if (!report || report.resident_id !== req.resident.residentId || report.is_deleted || report.is_archived) {
+    if (!report || report.resident_id !== residentId || report.is_deleted || report.is_archived) {
       res.status(404);
       throw new Error('Report not found');
     }
@@ -399,8 +402,8 @@ const updateReport = async (req, res, next) => {
       title: title || report.title,
       category: category || report.category,
       description: description || report.description,
-      latitude: latitude !== undefined ? latitude : report.latitude,
-      longitude: longitude !== undefined ? longitude : report.longitude,
+      latitude: latitude !== undefined && latitude !== '' ? latitude : report.latitude,
+      longitude: longitude !== undefined && longitude !== '' ? longitude : report.longitude,
       imageUrl,
     };
 
