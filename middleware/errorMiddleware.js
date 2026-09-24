@@ -13,6 +13,13 @@ const errorHandler = (err, req, res, next) => {
     message = 'Database connection error. Please check server database credentials.';
   }
 
+  if (err.name === 'MulterError' || err.code === 'INVALID_FILE_TYPE') {
+    statusCode = 400;
+    message = err.code === 'LIMIT_FILE_SIZE'
+      ? 'The uploaded image is too large'
+      : message;
+  }
+
   // Handle invalid request identifiers
   if (err.name === 'CastError' && err.kind === 'ObjectId') {
     statusCode = 404;

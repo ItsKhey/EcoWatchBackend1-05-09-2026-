@@ -38,8 +38,10 @@ const normalizeReport = (report, sourceCollection = 'reports') => {
 const logHistory = async (data) => {
   try {
     await historyRepository.createHistory(data);
+    return true;
   } catch (error) {
     logError(null, 'HISTORY', `Failed to log history: ${error.message}`);
+    return false;
   }
 };
 
@@ -88,22 +90,71 @@ const reportInput = (report, overrides = {}) => ({
   ...overrides,
 });
 
+const CLIENT_REPORT_ID_PATTERN = /^REP-[A-Z0-9]{8,32}$/i;
+
 const createReport = async (req, res, next) => {
   const { title, description, latitude, longitude } = req.body;
   const category = req.body.category || req.body.waste_type || req.body.wasteType || '';
+  const requestedReportId = typeof req.body.report_id === 'string'
+    ? req.body.report_id.trim()
+    : '';
+  const clientReportId = CLIENT_REPORT_ID_PATTERN.test(requestedReportId)
+    ? requestedReportId
+    : null;
 
   try {
     const residentId = req.resident.residentId || req.resident.resident_id;
     logInfo(req.requestId, 'REPORT', `New report submission from resident: ${residentId}`);
 
+    if (!residentId) {
+      res.status(401);
+      throw new Error('Authenticated resident identity is missing');
+    }
+    if (String(req.resident.role || '').toUpperCase() !== 'RESIDENT') {
+      res.status(403);
+      throw new Error('Only resident accounts can submit reports');
+    }
+    if (!title || !String(title).trim()) {
+      res.status(400);
+      throw new Error('Report title is required');
+    }
+    if (!category || !String(category).trim()) {
+      res.status(400);
+      throw new Error('Report category is required');
+    }
     if (!req.file) {
       res.status(400);
       throw new Error('Please upload an image');
     }
 
+    // A client retry may reuse its provisional report ID.  Check for an
+    // already-created report before uploading another image so an ambiguous
+    // network failure cannot create duplicate production reports.
+    if (clientReportId) {
+      const existing = await findReportInAnyCollection(clientReportId, residentId);
+      if (existing) {
+        logInfo(req.requestId, 'REPORT', `Idempotent replay accepted: ${clientReportId}`);
+        return res.status(200).json(normalizeReport(existing.report, existing.source));
+      }
+
+      const [activeWithSameId, archivedWithSameId, trashWithSameId] = await Promise.all([
+        reportRepository.findByReportId(clientReportId),
+        archivedReportRepository.findByReportId(clientReportId),
+        trashReportRepository.findByReportId(clientReportId),
+      ]);
+      const conflictingReport = [activeWithSameId, archivedWithSameId, trashWithSameId]
+        .find((candidate) => candidate && candidate.resident_id !== residentId);
+      if (conflictingReport) {
+        res.status(409);
+        throw new Error('Report identifier is already in use');
+      }
+    }
+
+    logInfo(req.requestId, 'REPORT', `Report fields received: clientReportId=${clientReportId || 'none'} imageBytes=${req.file.size} imageType=${req.file.mimetype}`);
+
     const result = await uploadImage(req.file.buffer, 'ecowatch/reports');
     const report = await reportRepository.createReport({
-      reportId: generateReportId(),
+      reportId: clientReportId || generateReportId(),
       residentId,
       title,
       category,
@@ -114,17 +165,21 @@ const createReport = async (req, res, next) => {
     });
 
     logInfo(req.requestId, 'DATABASE', `Report created: ${report.report_id}`);
-    await logHistory({
+    const historyLogged = await logHistory({
       residentId: report.resident_id,
       reportId: report.report_id,
       action: 'SUBMITTED',
       newStatus: report.status,
       description: `Report '${title}' was submitted.`,
     });
+    if (!historyLogged) {
+      logError(req.requestId, 'REPORT', `Report ${report.report_id} was created but submission history could not be written`);
+    }
 
-    res.status(201).json(normalizeReport(report));
+    return res.status(201).json(normalizeReport(report));
   } catch (error) {
-    next(error);
+    logError(req.requestId, 'REPORT_CREATE', `submission failed status=${res.statusCode} code=${error.code || error.name || 'Error'} message=${error.message}`);
+    return next(error);
   }
 };
 

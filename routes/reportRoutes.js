@@ -17,7 +17,20 @@ const {
 const { protect } = require('../middleware/authMiddleware');
 
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const allowedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const upload = multer({
+  storage,
+  limits: { fileSize: MAX_IMAGE_BYTES },
+  fileFilter(req, file, cb) {
+    if (!allowedImageTypes.has(String(file.mimetype).toLowerCase())) {
+      const error = new Error('Only JPEG, PNG, and WebP images are allowed');
+      error.code = 'INVALID_FILE_TYPE';
+      return cb(error);
+    }
+    return cb(null, true);
+  },
+});
 
 router.post('/', protect, upload.single('image'), createReport);
 router.get('/my-reports', protect, getMyReports);
