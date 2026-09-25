@@ -30,6 +30,13 @@ test('In Progress and Denied require a resident-visible admin response', () => {
   );
 });
 
+test('optional responses are not silently cleared when omitted', () => {
+  assert.deepEqual(
+    validateStatusPayload({ status: 'Completed' }),
+    { status: 'Completed', adminResponse: undefined }
+  );
+});
+
 test('response-only updates cannot smuggle status or actor fields', () => {
   assert.deepEqual(
     validateResponsePayload({ adminResponse: 'Cleanup is scheduled.' }),

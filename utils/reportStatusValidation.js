@@ -56,12 +56,14 @@ const validateStatusPayload = (body = {}) => {
     );
   }
 
+  const requiresResponse = [ADMIN_REPORT_STATUSES.IN_PROGRESS, ADMIN_REPORT_STATUSES.DENIED]
+    .includes(status);
+  const hasResponse = Object.prototype.hasOwnProperty.call(body, 'adminResponse');
   return {
     status,
-    adminResponse: validateAdminResponse(body.adminResponse, {
-      required: [ADMIN_REPORT_STATUSES.IN_PROGRESS, ADMIN_REPORT_STATUSES.DENIED]
-        .includes(status),
-    }),
+    adminResponse: hasResponse || requiresResponse
+      ? validateAdminResponse(body.adminResponse, { required: requiresResponse })
+      : undefined,
   };
 };
 
