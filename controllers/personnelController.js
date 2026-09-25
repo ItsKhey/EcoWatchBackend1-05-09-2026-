@@ -215,9 +215,18 @@ const createPersonnel = async (req, res, next) => {
       email: payload.email,
     });
 
+    // Hash the validated plaintext before crossing the repository boundary.
+    // Never spread payload into the repository: payload.password is plaintext
+    // and the repository intentionally accepts only passwordHash.
     const passwordHash = await bcrypt.hash(payload.password, BCRYPT_ROUNDS);
     const personnel = await personnelRepository.createPersonnel({
-      ...payload,
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      address: payload.address,
+      email: payload.email,
+      username: payload.username,
+      passwordHash,
+      phoneNumber: payload.phoneNumber,
       createdByAdminId: adminId,
     });
 

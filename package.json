@@ -8,6 +8,7 @@
     "dev": "nodemon server.js",
     "migrate:personnel": "node migration/migrate-personnel.js",
     "check:syntax": "node scripts/check-syntax.js",
+    "verify:personnel": "node scripts/verify-personnel-registration.js",
     "test": "npm run check:syntax"
   },
   "keywords": [],

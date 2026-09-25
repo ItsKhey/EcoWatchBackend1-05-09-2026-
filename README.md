@@ -57,7 +57,7 @@ npm run migrate:personnel
 
 The executable reads `migration/sql/002-personnel-accounts.sql` and runs it in a PostgreSQL transaction. The same SQL file can be pasted into the Supabase SQL editor. The migration creates `personnel_accounts`, `PERS-XXXX` ID generation, bcrypt-hash storage, Gmail/username constraints, lifecycle timestamps, admin audit fields, current-report assignment fields, indexes, and the `updated_at` trigger. PostgreSQL advisory-lock-backed triggers also serialize identity writes and enforce case-insensitive username/Gmail uniqueness across Personnel, Resident, and Admin tables, closing concurrent create/edit races in addition to the controller pre-checks.
 
-`npm test` performs a syntax check across all project JavaScript files.
+`npm test` performs a syntax check across all project JavaScript files. `npm run verify:personnel` performs a real Supabase-backed create/hash/login verification with a uniquely named temporary account and cleans that account up afterward.
 
 ## API Endpoints
 

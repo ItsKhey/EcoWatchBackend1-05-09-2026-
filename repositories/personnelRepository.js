@@ -248,6 +248,12 @@ async function createPersonnel(
   },
   queryable = pool
 ) {
+  if (typeof passwordHash !== 'string' || passwordHash.trim().length === 0) {
+    const error = new Error('Personnel password hash is required before insert.');
+    error.statusCode = 500;
+    throw error;
+  }
+
   const result = await queryable.query(
     `
     INSERT INTO personnel_accounts (
