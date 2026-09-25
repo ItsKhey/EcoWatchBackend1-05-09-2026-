@@ -105,8 +105,13 @@ async function sendResidentReportNotification({
   try {
     const messageId = await messaging.send({
       token,
-      // Data-only delivery lets the Android app render with the existing
-      // EcoWatch channel and route the tap to the exact report. A notification
+      // Include both data and notification payloads. Foreground delivery is
+      // rendered by the app's EcoWatch channel; background delivery gets an
+      // OS fallback notification with the same title/body and a report-aware
+      // click action. The data keys remain the source for exact deep linking.
+      notification: { title, body: message },
+      clickAction: 'com.example.myecowatch1.action.OPEN_NOTIFICATION',
+      // The data keys are also used by the app's foreground renderer. A notification
       // payload here would be rendered by the OS without these app extras.
       data: {
         notificationId: String(notificationId),
@@ -120,7 +125,7 @@ async function sendResidentReportNotification({
         priority: 'high',
         notification: {
           channelId: 'ecowatch_notifications',
-          clickAction: 'OPEN_ECOWATCH_NOTIFICATION',
+          clickAction: 'com.example.myecowatch1.action.OPEN_NOTIFICATION',
         },
       },
     });
