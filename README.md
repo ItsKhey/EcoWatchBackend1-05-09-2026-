@@ -49,13 +49,14 @@ MongoDB Atlas is retained only as a legacy data source for migration and verific
 
 ### Personnel schema migration (Phase 2A)
 
-Run the idempotent migration before deploying the new API:
+Run the idempotent migrations before deploying the new API:
 
 ```bash
 npm run migrate:personnel
+npm run migrate:admin-account-activity
 ```
 
-The executable reads `migration/sql/002-personnel-accounts.sql` and runs it in a PostgreSQL transaction. The same SQL file can be pasted into the Supabase SQL editor. The migration creates `personnel_accounts`, `PERS-XXXX` ID generation, bcrypt-hash storage, Gmail/username constraints, lifecycle timestamps, admin audit fields, current-report assignment fields, indexes, and the `updated_at` trigger. PostgreSQL advisory-lock-backed triggers also serialize identity writes and enforce case-insensitive username/Gmail uniqueness across Personnel, Resident, and Admin tables, closing concurrent create/edit races in addition to the controller pre-checks.
+The second migration adds the server-owned `admins.last_active` timestamp used by the admin Account Details screen. The same SQL files can be pasted into the Supabase SQL editor. The personnel migration creates `personnel_accounts`, `PERS-XXXX` ID generation, bcrypt-hash storage, Gmail/username constraints, lifecycle timestamps, admin audit fields, current-report assignment fields, indexes, and the `updated_at` trigger. PostgreSQL advisory-lock-backed triggers also serialize identity writes and enforce case-insensitive username/Gmail uniqueness across Personnel, Resident, and Admin tables, closing concurrent create/edit races in addition to the controller pre-checks.
 
 `npm test` performs a syntax check across all project JavaScript files. `npm run verify:personnel` performs a real Supabase-backed create/hash/login verification with a uniquely named temporary account and cleans that account up afterward.
 
@@ -66,7 +67,8 @@ The executable reads `migration/sql/002-personnel-accounts.sql` and runs it in a
 * `POST /api/auth/register` - Step 1: Register and receive `registrationId`
 * `POST /api/auth/verify-otp` - Step 2: Verify OTP and create resident account
 * `POST /api/auth/login` - Login with `username` and `password`
-* `GET /api/auth/me` - Get current resident profile (Protected)
+* `GET /api/auth/me` - Get the current profile (Protected; admins also receive the canonical `admin` object)
+* `GET /api/admin/me` - Get the authenticated administrator account and server-owned activity timestamps (Protected, Admin)
 
 ### Personnel Management
 

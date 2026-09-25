@@ -17,8 +17,11 @@ const {
   completePersonnelReport,
 } = require('../services/reportAssignmentService');
 
-const { findByIdentifier } =
-  require('../repositories/adminRepository');
+const {
+  findByIdentifier,
+  findByAdminId,
+  touchLastActive,
+} = require('../repositories/adminRepository');
 
 const {
   PERSONNEL_ID_PATTERN,
@@ -27,6 +30,24 @@ const {
 } = require('../utils/personnelValidation');
 
 const generateToken = require('../utils/generateToken');
+
+const mapAdminAccount = (admin) => ({
+  adminId: admin.admin_id,
+  firstName: admin.first_name,
+  lastName: admin.last_name,
+  username: admin.username,
+  email: admin.email,
+  address: admin.address || '',
+  profileImage: admin.profile_image || '',
+  role: admin.role || 'ADMIN',
+  status: admin.status || 'AVAILABLE',
+  phoneNumber: admin.phone_number || '',
+  createdAt: admin.created_at || null,
+  updatedAt: admin.updated_at || null,
+  // updated_at is a safe server-owned fallback during a rolling migration
+  // before last_active is populated for an existing account.
+  lastActive: admin.last_active || admin.updated_at || admin.created_at || null,
+});
 
 // @desc    Authenticate an admin
 // @route   POST /api/admin/login
@@ -40,30 +61,63 @@ const loginAdmin = async (req, res, next) => {
 
     if (
       !admin ||
-      admin.role !== 'ADMIN' ||
+      String(admin.role || '').toUpperCase() !== 'ADMIN' ||
       !await bcrypt.compare(password, admin.password_hash)
     ) {
       res.status(401);
       throw new Error('Invalid username or password');
     }
 
+    let lastActive = admin.last_active || null;
+    try {
+      lastActive = await touchLastActive(admin.admin_id) || lastActive;
+    } catch (activityError) {
+      // A telemetry write must not prevent a valid administrator login.
+      console.warn(`[AUTH] Unable to update admin activity: ${activityError.message}`);
+    }
+
+    const adminResponse = mapAdminAccount({
+      ...admin,
+      last_active: lastActive || admin.updated_at || admin.created_at || null,
+    });
     res.json({
       success: true,
       token: generateToken(admin.admin_id, {
         role: admin.role,
+        admin_id: admin.admin_id,
       }),
+      admin: adminResponse,
+      // Compatibility alias for older admin clients. New clients use admin.
       resident: {
+        ...adminResponse,
         residentId: admin.admin_id,
-        firstName: admin.first_name,
-        lastName: admin.last_name,
-        username: admin.username,
-        email: admin.email,
-        address: admin.address || '',
-        profileImage: admin.profile_image || '',
-        role: admin.role,
-        status: admin.status || 'AVAILABLE',
-        phoneNumber: admin.phone_number || '',
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get the authenticated administrator account
+// @route   GET /api/admin/me
+// @access  Private/Admin
+const getCurrentAdmin = async (req, res, next) => {
+  try {
+    const adminId = req.admin?.admin_id;
+    if (!adminId) {
+      res.status(401);
+      throw new Error('Not authorized as an administrator');
+    }
+
+    const admin = await findByAdminId(adminId);
+    if (!admin) {
+      res.status(404);
+      throw new Error('Administrator account not found');
+    }
+
+    res.json({
+      success: true,
+      admin: mapAdminAccount(admin),
     });
   } catch (error) {
     next(error);
@@ -248,6 +302,7 @@ const approveReportCompletion = async (
 
 module.exports = {
   loginAdmin,
+  getCurrentAdmin,
   getAllReports,
   assignPersonnel,
   getPersonnel,

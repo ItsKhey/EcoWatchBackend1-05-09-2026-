@@ -6,6 +6,7 @@ const {
 
 const {
   findByAdminId,
+  touchLastActive,
 } = require('../repositories/adminRepository');
 
 const {
@@ -66,6 +67,12 @@ const protect = async (req, res, next) => {
         throw new Error('Not authorized, user not found');
       }
 
+      // Older admin tokens did not carry a role claim. If the identifier
+      // resolves to the admins table, promote that authenticated record to
+      // req.admin so the canonical admin routes remain usable during rollout.
+      const resolvedAdmin = isAdminToken
+        || (user && user.admin_id && String(user.role || '').toUpperCase() === 'ADMIN');
+
       /*
        * Keep req.resident for compatibility with the
        * existing controllers/routes.
@@ -77,8 +84,22 @@ const protect = async (req, res, next) => {
         admin_id: user.admin_id || user.resident_id || user.adminId
       };
 
-      if (isAdminToken) {
+      if (resolvedAdmin) {
         req.admin = user;
+
+        // Activity is server-owned. Failure to update telemetry must not make
+        // an otherwise valid administrator request fail, especially during a
+        // rolling deployment before the new column is migrated.
+        try {
+          await touchLastActive(user.admin_id);
+        } catch (activityError) {
+          logError(
+            req.requestId,
+            'AUTH',
+            `Unable to update admin activity: ${activityError.message}`
+          );
+        }
+
         req.auth = {
           accountType: 'ADMIN',
           role: 'ADMIN',

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const {
   loginAdmin,
+  getCurrentAdmin,
   getAllReports,
   assignPersonnel,
   getPersonnel,
@@ -25,6 +26,8 @@ router.post('/login', loginAdmin);
 router.use(protect);
 router.use(admin);
 
+router.get('/me', getCurrentAdmin);
+router.get('/account', getCurrentAdmin); // Compatibility alias for older clients
 router.get('/reports', getAllReports);
 router.post('/reports/:id/assign', assignPersonnel);
 router.post('/reports/:id/approve', approveReportCompletion);

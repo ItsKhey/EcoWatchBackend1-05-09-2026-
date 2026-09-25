@@ -16,6 +16,7 @@ const {
   findByUsername: findAdminByUsername,
   findByEmail: findAdminByEmail,
   updateAdmin,
+  touchLastActive,
   updatePassword: updateAdminPassword,
 } = require('../repositories/adminRepository');
 
@@ -106,18 +107,38 @@ const mapResidentResponse = (user) => ({
   profileImage: user.profile_image || '',
 });
 
-const mapLoginResponse = (user, isAdmin = false) => ({
-  residentId: isAdmin ? user.admin_id : user.resident_id,
+const mapAdminResponse = (user) => ({
+  adminId: user.admin_id,
   firstName: user.first_name,
   lastName: user.last_name,
   username: user.username,
   email: user.email,
   address: user.address || '',
   profileImage: user.profile_image || '',
-  role: user.role,
+  role: user.role || 'ADMIN',
   status: user.status || 'AVAILABLE',
   phoneNumber: user.phone_number || '',
+  createdAt: user.created_at || null,
+  updatedAt: user.updated_at || null,
+  lastActive: user.last_active || user.updated_at || user.created_at || null,
 });
+
+const mapLoginResponse = (user, isAdmin = false) => (
+  isAdmin
+    ? mapAdminResponse(user)
+    : {
+        residentId: user.resident_id,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        username: user.username,
+        email: user.email,
+        address: user.address || '',
+        profileImage: user.profile_image || '',
+        role: user.role,
+        status: user.status || 'AVAILABLE',
+        phoneNumber: user.phone_number || '',
+      }
+);
 
 const registerResident = async (req, res, next) => {
   const {
@@ -560,7 +581,7 @@ const changePassword = async (req, res, next) => {
   const { oldPassword, newPassword } = req.body;
 
   try {
-    const isAdmin = req.resident.role === 'ADMIN';
+    const isAdmin = String(req.resident.role || '').toUpperCase() === 'ADMIN';
 
     const user = isAdmin
       ? await findByAdminId(req.resident.admin_id)
@@ -609,10 +630,30 @@ const loginResident = async (req, res, next) => {
       admin &&
       await bcrypt.compare(password, admin.password_hash)
     ) {
+      let lastActive = admin.last_active || null;
+      try {
+        lastActive = await touchLastActive(admin.admin_id) || lastActive;
+      } catch (activityError) {
+        console.warn(`[AUTH] Unable to update admin activity: ${activityError.message}`);
+      }
+
+      const adminResponse = mapAdminResponse({
+        ...admin,
+        last_active: lastActive || admin.updated_at || admin.created_at || null,
+      });
       res.json({
         success: true,
-        token: generateToken(admin.admin_id),
-        resident: mapLoginResponse(admin, true),
+        token: generateToken(admin.admin_id, {
+          role: 'ADMIN',
+          admin_id: admin.admin_id,
+        }),
+        admin: adminResponse,
+        // Compatibility only. New admin clients use the canonical admin
+        // object and never read this legacy resident-shaped alias.
+        resident: {
+          ...adminResponse,
+          residentId: admin.admin_id,
+        },
       });
 
       logInfo(
@@ -668,22 +709,35 @@ const loginResident = async (req, res, next) => {
 
 const getResidentProfile = async (req, res, next) => {
   try {
-    const isAdmin = req.resident.role === 'ADMIN';
+    const isAdmin = String(req.resident.role || '').toUpperCase() === 'ADMIN';
 
     const user = isAdmin
       ? await findByAdminId(req.resident.admin_id)
       : await findByResidentId(req.resident.resident_id);
 
     if (user) {
-      res.json({
-        success: true,
-        resident: mapResidentResponse({
-          ...user,
-          resident_id: isAdmin
-            ? user.admin_id
-            : user.resident_id,
-        }),
-      });
+      if (isAdmin) {
+        res.json({
+          success: true,
+          admin: mapAdminResponse(user),
+          // Compatibility alias for resident clients during rollout.
+          resident: {
+            ...mapResidentResponse({
+              ...user,
+              resident_id: user.admin_id,
+            }),
+            role: user.role,
+            createdAt: user.created_at || null,
+            updatedAt: user.updated_at || null,
+            lastActive: user.last_active || user.updated_at || user.created_at || null,
+          },
+        });
+      } else {
+        res.json({
+          success: true,
+          resident: mapResidentResponse(user),
+        });
+      }
     } else {
       res.status(404);
       throw new Error('User not found');
@@ -710,7 +764,7 @@ const updateProfile = async (req, res, next) => {
   );
 
   try {
-    const isAdmin = req.resident.role === 'ADMIN';
+    const isAdmin = String(req.resident.role || '').toUpperCase() === 'ADMIN';
 
     const currentUser = isAdmin
       ? await findByAdminId(req.resident.admin_id)
@@ -782,15 +836,22 @@ const updateProfile = async (req, res, next) => {
 
     logProfileRequest(req, 'postgresUpdateResult=success');
 
-    res.json({
-      success: true,
-      resident: mapResidentResponse({
-        ...updatedUser,
-        resident_id: isAdmin
-          ? updatedUser.admin_id
-          : updatedUser.resident_id,
-      }),
-    });
+    if (isAdmin) {
+      res.json({
+        success: true,
+        admin: mapAdminResponse(updatedUser),
+        // Compatibility alias for older resident clients.
+        resident: mapResidentResponse({
+          ...updatedUser,
+          resident_id: updatedUser.admin_id,
+        }),
+      });
+    } else {
+      res.json({
+        success: true,
+        resident: mapResidentResponse(updatedUser),
+      });
+    }
   } catch (error) {
     logProfileRequest(
       req,
@@ -824,7 +885,7 @@ const updateProfileImage = async (req, res, next) => {
 
     logProfileRequest(req, 'cloudinaryUploadResult=success');
 
-    const isAdmin = req.resident.role === 'ADMIN';
+    const isAdmin = String(req.resident.role || '').toUpperCase() === 'ADMIN';
 
     const currentUser = isAdmin
       ? await findByAdminId(req.resident.admin_id)
@@ -865,7 +926,7 @@ const resetLoggedInPassword = async (req, res, next) => {
   const { password } = req.body;
 
   try {
-    const isAdmin = req.resident.role === 'ADMIN';
+    const isAdmin = String(req.resident.role || '').toUpperCase() === 'ADMIN';
 
     const user = isAdmin
       ? await findByAdminId(req.resident.admin_id)

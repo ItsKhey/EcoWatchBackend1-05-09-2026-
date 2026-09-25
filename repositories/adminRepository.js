@@ -158,6 +158,20 @@ async function updateAdmin(adminId, updates) {
   return result.rows[0] || null;
 }
 
+async function touchLastActive(adminId) {
+  const result = await pool.query(
+    `
+    UPDATE admins
+    SET last_active = NOW()
+    WHERE admin_id = $1
+    RETURNING last_active
+    `,
+    [adminId]
+  );
+
+  return result.rows[0]?.last_active || null;
+}
+
 async function updatePassword(adminId, passwordHash) {
   const result = await pool.query(
     `
@@ -180,5 +194,6 @@ module.exports = {
   findByEmail,
   createAdmin,
   updateAdmin,
+  touchLastActive,
   updatePassword,
 };
