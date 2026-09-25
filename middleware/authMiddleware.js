@@ -47,15 +47,21 @@ const protect = async (req, res, next) => {
         throw new Error('Token does not contain user identifier');
       }
 
-      // Resident lookup
-      let user = await findByResidentId(decoded.id);
+      const isAdminToken = String(decoded.role || '').toUpperCase() === 'ADMIN';
 
-      // Admin lookup
-      if (!user) {
+      // An admin token must resolve against admins first. This prevents a
+      // compatibility resident lookup from supplying the audit identity.
+      let user = isAdminToken
+        ? await findByAdminId(decoded.id)
+        : await findByResidentId(decoded.id);
+
+      // Preserve support for older non-admin tokens that may resolve through
+      // the admin table, while admin routes still require req.admin below.
+      if (!user && !isAdminToken) {
         user = await findByAdminId(decoded.id);
       }
 
-      if (!user) {
+      if (!user || (isAdminToken && String(user.role || '').toUpperCase() !== 'ADMIN')) {
         res.status(401);
         throw new Error('Not authorized, user not found');
       }
@@ -70,6 +76,14 @@ const protect = async (req, res, next) => {
         resident_id: user.resident_id || user.admin_id || user.residentId,
         admin_id: user.admin_id || user.resident_id || user.adminId
       };
+
+      if (isAdminToken) {
+        req.admin = user;
+        req.auth = {
+          accountType: 'ADMIN',
+          role: 'ADMIN',
+        };
+      }
 
       logProfileRequest(
         req,

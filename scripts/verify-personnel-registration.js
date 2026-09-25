@@ -42,7 +42,7 @@ try {
   assert(process.env.JWT_SECRET, 'JWT_SECRET is required');
 
   const adminResult = await pool.query(
-    `SELECT admin_id
+    `SELECT admin_id, role
      FROM admins
      WHERE role = 'ADMIN'
      ORDER BY created_at ASC
@@ -51,11 +51,15 @@ try {
   assert(adminResult.rowCount > 0, 'An existing admin account is required for the protected route test');
 
   const adminId = adminResult.rows[0].admin_id;
+  assert.strictEqual(adminResult.rows[0].role, 'ADMIN', 'Selected account is not an ADMIN');
   const adminToken = jwt.sign(
     { id: adminId, role: 'ADMIN' },
     process.env.JWT_SECRET,
     { expiresIn: '5m' }
   );
+  const decodedAdminToken = jwt.verify(adminToken, process.env.JWT_SECRET);
+  assert.strictEqual(decodedAdminToken.id, adminId, 'Admin JWT id is incorrect');
+  assert.strictEqual(decodedAdminToken.role, 'ADMIN', 'Admin JWT role is incorrect');
 
   serverProcess = spawn(process.execPath, ['server.js'], {
     cwd: root,
@@ -96,6 +100,7 @@ try {
       gmail,
       username,
       password,
+      createdByAdminId: 'RES-FORGED',
     }),
   });
   const createBody = await readJson(createResponse);
@@ -106,7 +111,7 @@ try {
   personnelId = createBody.personnel.personnelId;
 
   const storedResult = await pool.query(
-    `SELECT personnel_id, password_hash
+    `SELECT personnel_id, password_hash, created_by_admin_id, updated_by_admin_id
      FROM personnel_accounts
      WHERE personnel_id = $1`,
     [personnelId]
@@ -116,6 +121,24 @@ try {
   assert(typeof storedHash === 'string' && storedHash.length > 0, 'password_hash was NULL or empty');
   assert.notStrictEqual(storedHash, password, 'password_hash contains the plaintext password');
   assert(await bcrypt.compare(password, storedHash), 'Stored password_hash does not match the password');
+  assert.strictEqual(
+    storedResult.rows[0].created_by_admin_id,
+    adminId,
+    'created_by_admin_id did not come from the authenticated admin'
+  );
+  assert.strictEqual(
+    storedResult.rows[0].updated_by_admin_id,
+    adminId,
+    'updated_by_admin_id did not come from the authenticated admin'
+  );
+  assert(
+    /^ADM-/i.test(storedResult.rows[0].created_by_admin_id),
+    `created_by_admin_id is not an admin ID: ${storedResult.rows[0].created_by_admin_id}`
+  );
+  assert(
+    /^ADM-/i.test(storedResult.rows[0].updated_by_admin_id),
+    `updated_by_admin_id is not an admin ID: ${storedResult.rows[0].updated_by_admin_id}`
+  );
 
   const loginResponse = await fetch(`${baseUrl}/api/personnel/login`, {
     method: 'POST',
@@ -130,6 +153,8 @@ try {
 
   console.log(`PASS create: ${createResponse.status}`);
   console.log(`PASS generated personnel ID: ${personnelId}`);
+  console.log(`PASS admin JWT identity: ${adminId} / ADMIN`);
+  console.log(`PASS audit columns: ${adminId} / ${adminId}`);
   console.log('PASS password_hash populated and bcrypt-compatible');
   console.log(`PASS personnel login: ${loginResponse.status}`);
   console.log('PASS response payloads omit password_hash');

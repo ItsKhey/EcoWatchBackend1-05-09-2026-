@@ -98,7 +98,9 @@ async function migrateAdmin() {
                 RETURNING admin_id
                 `,
                 [
-                    admin.residentId,
+                    typeof admin.residentId === "string" && admin.residentId.startsWith("RES-")
+                        ? admin.residentId.replace(/^RES-/, "ADM-")
+                        : admin.residentId,
                     admin.firstName,
                     admin.lastName,
                     admin.username,

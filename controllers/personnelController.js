@@ -18,7 +18,7 @@ const DUMMY_PASSWORD_HASH =
   '$2b$12$qbjGRNsYkcKw5q4PRNWJ0uHN/C4rzcqGTaUqUvUH6HapMZqfpsp.m';
 
 const getAdminId = (req) => {
-  const adminId = req.resident?.admin_id || req.resident?.resident_id;
+  const adminId = req.admin?.admin_id;
 
   if (!adminId) {
     throw createHttpError(403, 'Authenticated administrator identity is missing.');
