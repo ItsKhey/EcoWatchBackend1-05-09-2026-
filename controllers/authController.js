@@ -33,6 +33,11 @@ const {
   deleteByEmail: deleteResetByEmail,
 } = require('../repositories/passwordResetRepository');
 
+const {
+  findByUsername: findPersonnelByUsername,
+  findByEmail: findPersonnelByEmail,
+} = require('../repositories/personnelRepository');
+
 const generateToken = require('../utils/generateToken');
 const {
   generateResidentId,
@@ -130,12 +135,32 @@ const registerResident = async (req, res, next) => {
       `Registration attempt for username: ${username}`
     );
 
-    const existingResident = await findResidentByUsername(username);
-    const existingAdmin = await findAdminByUsername(username);
+    const [
+      existingResident,
+      existingAdmin,
+      existingPersonnel,
+      residentWithEmail,
+      adminWithEmail,
+      personnelWithEmail,
+    ] = await Promise.all([
+      findResidentByUsername(username),
+      findAdminByUsername(username),
+      findPersonnelByUsername(username),
+      email ? findResidentByEmail(email) : null,
+      email ? findAdminByEmail(email) : null,
+      email ? findPersonnelByEmail(email) : null,
+    ]);
 
-    if (existingResident || existingAdmin) {
-      res.status(400);
-      throw new Error('Username is already taken');
+    if (
+      existingResident ||
+      existingAdmin ||
+      existingPersonnel ||
+      residentWithEmail ||
+      adminWithEmail ||
+      personnelWithEmail
+    ) {
+      res.status(409);
+      throw new Error('Username or email is already registered');
     }
 
     const otp = generateOTP(4);
@@ -696,15 +721,48 @@ const updateProfile = async (req, res, next) => {
       throw new Error('User not found');
     }
 
-    if (username && username !== currentUser.username) {
-      const residentWithUsername =
-        await findResidentByUsername(username);
-      const adminWithUsername =
-        await findAdminByUsername(username);
+    if (
+      (username && username !== currentUser.username) ||
+      (email && email !== currentUser.email)
+    ) {
+      const [
+        residentWithUsername,
+        adminWithUsername,
+        personnelWithUsername,
+        residentWithEmail,
+        adminWithEmail,
+        personnelWithEmail,
+      ] = await Promise.all([
+        username && username !== currentUser.username
+          ? findResidentByUsername(username)
+          : null,
+        username && username !== currentUser.username
+          ? findAdminByUsername(username)
+          : null,
+        username && username !== currentUser.username
+          ? findPersonnelByUsername(username)
+          : null,
+        email && email !== currentUser.email
+          ? findResidentByEmail(email)
+          : null,
+        email && email !== currentUser.email
+          ? findAdminByEmail(email)
+          : null,
+        email && email !== currentUser.email
+          ? findPersonnelByEmail(email)
+          : null,
+      ]);
 
-      if (residentWithUsername || adminWithUsername) {
-        res.status(400);
-        throw new Error('Username is already taken');
+      if (
+        residentWithUsername ||
+        adminWithUsername ||
+        personnelWithUsername ||
+        residentWithEmail ||
+        adminWithEmail ||
+        personnelWithEmail
+      ) {
+        res.status(409);
+        throw new Error('Username or email is already registered');
       }
     }
 

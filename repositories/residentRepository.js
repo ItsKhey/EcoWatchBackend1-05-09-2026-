@@ -58,6 +58,32 @@ async function findByEmail(email) {
   return result.rows[0] || null;
 }
 
+// Compatibility lookup for Phase 1 personnel that was stored in residents.
+// These rows remain report-assignment compatible but are never copied into
+// personnel_accounts or used to authenticate through /api/personnel/login.
+async function findLegacyPersonnelByIds(
+  residentIds,
+  { queryable = pool, lock = false } = {}
+) {
+  if (!residentIds.length) {
+    return [];
+  }
+
+  const result = await queryable.query(
+    `
+    SELECT *
+    FROM residents
+    WHERE resident_id = ANY($1::varchar[])
+      AND lower(role) = lower('Environmental Services Personnel')
+    ORDER BY resident_id
+    ${lock ? 'FOR UPDATE' : ''}
+    `,
+    [residentIds]
+  );
+
+  return result.rows;
+}
+
 async function findByRole(role) {
   const result = await pool.query(
     `
@@ -200,6 +226,7 @@ module.exports = {
   findByResidentId,
   findByUsername,
   findByEmail,
+  findLegacyPersonnelByIds,
   findByRole,
   createResident,
   updateResident,

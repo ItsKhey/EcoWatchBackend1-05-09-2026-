@@ -8,6 +8,10 @@ const {
   findByAdminId,
 } = require('../repositories/adminRepository');
 
+const {
+  findByPersonnelId,
+} = require('../repositories/personnelRepository');
+
 const { logError, logProfileRequest } = require('../utils/logger');
 
 const protect = async (req, res, next) => {
@@ -104,4 +108,82 @@ const protect = async (req, res, next) => {
   }
 };
 
-module.exports = { protect };
+const protectPersonnel = async (req, res, next) => {
+  const authorization = req.headers.authorization;
+
+  if (!authorization || !authorization.startsWith('Bearer ')) {
+    const error = new Error('Not authorized, no personnel token');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  const token = authorization.slice('Bearer '.length).trim();
+
+  if (!token) {
+    const error = new Error('Not authorized, no personnel token');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  let decoded;
+
+  try {
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (error) {
+    const authenticationError = new Error('Not authorized, personnel token failed');
+    authenticationError.statusCode = 401;
+    logError(
+      req.requestId,
+      'PERSONNEL_AUTH',
+      `Personnel token verification failed: ${error.message}`
+    );
+    return next(authenticationError);
+  }
+
+  if (!decoded.id || !/^PERS-[0-9]{4}$/i.test(decoded.id)) {
+    const error = new Error('Not authorized as personnel');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  let personnel;
+
+  try {
+    personnel = await findByPersonnelId(decoded.id.toUpperCase());
+  } catch (error) {
+    logError(
+      req.requestId,
+      'PERSONNEL_AUTH',
+      `Personnel account lookup failed: ${error.message}`
+    );
+    return next(error);
+  }
+
+  if (!personnel) {
+    const error = new Error('Not authorized, personnel account not found');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  if (!personnel.enabled || personnel.deleted_at) {
+    const error = new Error('Personnel account is disabled or deleted');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  if (String(personnel.role || '').toUpperCase() !== 'PERSONNEL') {
+    const error = new Error('Not authorized as personnel');
+    error.statusCode = 403;
+    return next(error);
+  }
+
+  req.personnel = personnel;
+  req.auth = {
+    accountType: 'PERSONNEL',
+    role: 'PERSONNEL',
+  };
+
+  return next();
+};
+
+module.exports = { protect, protectPersonnel };

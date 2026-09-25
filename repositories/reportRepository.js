@@ -132,7 +132,7 @@ async function createReport({
   return result.rows[0];
 }
 
-async function updateReport(reportId, updates) {
+async function updateReport(reportId, updates, queryable = pool) {
   const allowedFields = {
     title: 'title',
     category: 'category',
@@ -175,7 +175,7 @@ async function updateReport(reportId, updates) {
 
   values.push(reportId);
 
-  const result = await pool.query(
+  const result = await queryable.query(
     `
     UPDATE reports
     SET ${setParts.join(', ')}

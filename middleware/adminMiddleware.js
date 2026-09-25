@@ -1,10 +1,13 @@
 const admin = (req, res, next) => {
-  if (req.resident && req.resident.role === 'ADMIN') {
-    next();
-  } else {
-    res.status(403);
-    throw new Error('Not authorized as an admin');
+  const role = String(req.resident?.role || '').toUpperCase();
+
+  if (role !== 'ADMIN') {
+    const error = new Error('Not authorized as an admin');
+    error.statusCode = 403;
+    return next(error);
   }
+
+  return next();
 };
 
 module.exports = { admin };

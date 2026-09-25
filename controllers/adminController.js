@@ -9,14 +9,22 @@ const notificationRepository =
 const historyRepository =
   require('../repositories/historyRepository');
 
-const residentRepository =
-  require('../repositories/residentRepository');
+const personnelController =
+  require('./personnelController');
 
-const { generateResidentId } =
-  require('../utils/generateId');
+const {
+  assignPersonnelToReport,
+  completePersonnelReport,
+} = require('../services/reportAssignmentService');
 
 const { findByIdentifier } =
   require('../repositories/adminRepository');
+
+const {
+  PERSONNEL_ID_PATTERN,
+  ASSIGNMENT_ID_PATTERN,
+  createHttpError,
+} = require('../utils/personnelValidation');
 
 const generateToken = require('../utils/generateToken');
 
@@ -79,54 +87,87 @@ const getAllReports = async (req, res, next) => {
 // @route   POST /api/admin/reports/:id/assign
 // @access  Private/Admin
 const assignPersonnel = async (req, res, next) => {
-  const {
-    assignedPersonnelIds,
-    priority,
-    handledById
-  } = req.body;
-
   try {
-    const report =
-      await reportRepository.findByReportId(
-        req.params.id
-      );
+    const {
+      assignedPersonnelIds = [],
+      priority,
+      handledById: requestedHandlerId = null,
+    } = req.body || {};
+
+    if (!Array.isArray(assignedPersonnelIds)) {
+      throw createHttpError(400, 'assignedPersonnelIds must be an array.');
+    }
+
+    if (assignedPersonnelIds.length > 50) {
+      throw createHttpError(400, 'A report cannot be assigned to more than 50 personnel.');
+    }
+
+    const normalizedPersonnelIds = assignedPersonnelIds.map((personnelId) => {
+      if (
+        typeof personnelId !== 'string' ||
+        !ASSIGNMENT_ID_PATTERN.test(personnelId.trim().toUpperCase())
+      ) {
+        throw createHttpError(
+          400,
+          'Every assigned personnel ID must use PERS-XXXX or legacy RES-XXXXXXXX format.'
+        );
+      }
+
+      return personnelId.trim().toUpperCase();
+    });
+
+    const uniqueAssignmentIds = [...new Set(normalizedPersonnelIds)];
+    if (
+      requestedHandlerId !== undefined &&
+      requestedHandlerId !== null &&
+      typeof requestedHandlerId !== 'string'
+    ) {
+      throw createHttpError(400, 'handledById must be a PERS-XXXX string or null.');
+    }
+
+    const handledById =
+      typeof requestedHandlerId === 'string' && requestedHandlerId.trim()
+        ? requestedHandlerId.trim().toUpperCase()
+        : null;
+
+    // Admin clients intentionally omit handledById. When a personnel client
+    // supplies it, it must identify a real personnel_accounts record.
+    if (handledById && !PERSONNEL_ID_PATTERN.test(handledById)) {
+      throw createHttpError(400, 'handledById must use the PERS-XXXX format.');
+    }
+
+    if (
+      priority !== undefined &&
+      (typeof priority !== 'string' || !priority.trim() || priority.length > 20)
+    ) {
+      throw createHttpError(400, 'priority must be a valid non-empty string.');
+    }
+
+    const report = await reportRepository.findByReportId(req.params.id);
 
     if (!report) {
-      res.status(404);
-      throw new Error('Report not found');
+      throw createHttpError(404, 'Report not found.');
     }
 
     const oldStatus = report.status;
+    const adminId = req.resident.admin_id || req.resident.resident_id;
+    const updatedReport = await assignPersonnelToReport({
+      report,
+      assignedPersonnelIds: uniqueAssignmentIds,
+      priority: priority?.trim() || report.priority,
+      handledById,
+      updatedByAdminId: adminId,
+    });
 
-    const updatedReport =
-      await reportRepository.updateReport(
-        report.report_id,
-        {
-          assignedPersonnelIds:
-            assignedPersonnelIds || [],
-
-          priority:
-            priority || report.priority,
-
-          handledById:
-            handledById || null,
-
-          status: 'In Progress'
-        }
-      );
-
-    // Notify assigned personnel
-    for (const pId of assignedPersonnelIds || []) {
+    for (const personnelId of uniqueAssignmentIds) {
       await notificationRepository.createNotification({
-        residentId: pId,
+        residentId: personnelId,
         reportId: report.report_id,
         title: 'New Task Assigned',
-        message:
-          `You have been assigned to report: ${report.title}`,
+        message: `You have been assigned to report: ${report.title}`,
       });
     }
 
-    // Log history
     await historyRepository.createHistory({
       residentId: report.resident_id,
       reportId: report.report_id,
@@ -134,10 +175,8 @@ const assignPersonnel = async (req, res, next) => {
       oldStatus,
       newStatus: 'In Progress',
       description:
-        `Report assigned to ${
-          (assignedPersonnelIds || []).length
-        } personnel with ${
-          priority || report.priority
+        `Report assigned to ${uniqueAssignmentIds.length} personnel with ${
+          priority?.trim() || report.priority
         } priority.`,
     });
 
@@ -147,64 +186,10 @@ const assignPersonnel = async (req, res, next) => {
   }
 };
 
-// @desc    Get all personnel
-// @route   GET /api/admin/personnel
-// @access  Private/Admin
-const getPersonnel = async (req, res, next) => {
-  try {
-    const personnel =
-      await residentRepository.findByRole(
-        'Environmental Services Personnel'
-      );
-
-    res.json(personnel);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Create personnel account
-// @route   POST /api/admin/create-personnel
-// @access  Private/Admin
-const createPersonnel = async (req, res, next) => {
-  const {
-    firstName,
-    lastName,
-    username,
-    email,
-    password,
-    phoneNumber
-  } = req.body;
-
-  try {
-    const userExists =
-      await residentRepository.findByUsername(
-        username
-      );
-
-    if (userExists) {
-      res.status(400);
-      throw new Error('Username is already taken');
-    }
-
-    /*
-     * PASSWORD HASHING
-     *
-     * Do not insert the raw password here.
-     *
-     * We need to use the same password-hashing
-     * mechanism currently used by the resident
-     * registration/authentication system.
-     */
-
-    throw new Error(
-      'Personnel creation migration requires the existing password hashing implementation.'
-    );
-
-  } catch (error) {
-    next(error);
-  }
-};
+// Shared personnel handlers keep /api/admin/personnel and the original
+// /api/admin/create-personnel alias on the same production implementation.
+const getPersonnel = personnelController.listPersonnelLegacy;
+const createPersonnel = personnelController.createPersonnel;
 
 // @desc    Approve a report completion
 // @route   POST /api/admin/reports/:id/approve
@@ -226,14 +211,12 @@ const approveReportCompletion = async (
     }
 
     const oldStatus = report.status;
+    const adminId = req.resident.admin_id || req.resident.resident_id;
 
-    await reportRepository.updateReport(
-      report.report_id,
-      {
-        status: 'Completed',
-        resolvedAt: new Date()
-      }
-    );
+    await completePersonnelReport({
+      report,
+      updatedByAdminId: adminId,
+    });
 
     await notificationRepository.createNotification({
       residentId: report.resident_id,
