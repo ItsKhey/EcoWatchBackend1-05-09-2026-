@@ -5,6 +5,10 @@ const {
   getCurrentAdmin,
   getAllReports,
   assignPersonnel,
+  reassignPersonnel,
+  getAssignment,
+  unassignPersonnel,
+  deleteReportAssignment,
   getPersonnel,
   createPersonnel,
   approveReportCompletion,
@@ -19,6 +23,12 @@ const {
 } = require('../controllers/personnelController');
 const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
+const {
+  listResidents,
+  getResidentDetails,
+  getResidentReports,
+  getResidentReportStatistics,
+} = require('../controllers/residentAdminController');
 
 router.post('/login', loginAdmin);
 
@@ -29,7 +39,17 @@ router.use(admin);
 router.get('/me', getCurrentAdmin);
 router.get('/account', getCurrentAdmin); // Compatibility alias for older clients
 router.get('/reports', getAllReports);
+router.get('/residents', listResidents);
+router.get('/residents/:residentId', getResidentDetails);
+router.get('/residents/:residentId/reports', getResidentReports);
+router.get('/residents/:residentId/reports/statistics', getResidentReportStatistics);
+router.get('/residents/:residentId/statistics', getResidentReportStatistics);
 router.post('/reports/:id/assign', assignPersonnel);
+router.post('/reports/:id/reassign', reassignPersonnel);
+router.get('/reports/:id/assignment', getAssignment);
+router.get('/reports/:id/assignments', getAssignment);
+router.post('/reports/:id/unassign', unassignPersonnel);
+router.delete('/reports/:id/assignment', deleteReportAssignment);
 router.post('/reports/:id/approve', approveReportCompletion);
 
 // Canonical personnel management contract used by the admin Android app.

@@ -6,15 +6,16 @@ const reportRepository =
 const notificationRepository =
   require('../repositories/notificationRepository');
 
-const historyRepository =
-  require('../repositories/historyRepository');
-
 const personnelController =
   require('./personnelController');
 
 const {
   assignPersonnelToReport,
+  reassignPersonnelToReport,
+  unassignPersonnelFromReport,
+  getReportAssignment,
   completePersonnelReport,
+  mapAssignmentReport,
 } = require('../services/reportAssignmentService');
 
 const {
@@ -24,10 +25,13 @@ const {
 } = require('../repositories/adminRepository');
 
 const {
-  PERSONNEL_ID_PATTERN,
-  ASSIGNMENT_ID_PATTERN,
   createHttpError,
 } = require('../utils/personnelValidation');
+const {
+  normalizeReportId,
+  validateReportAssignmentPayload,
+} = require('../utils/reportAssignmentValidation');
+const { logError } = require('../utils/logger');
 
 const generateToken = require('../utils/generateToken');
 
@@ -48,6 +52,41 @@ const mapAdminAccount = (admin) => ({
   // before last_active is populated for an existing account.
   lastActive: admin.last_active || admin.updated_at || admin.created_at || null,
 });
+
+const requireAdminActor = (req) => {
+  // Assignment audit fields are derived exclusively from the authenticated
+  // admin record, never from a compatibility profile or client identifier.
+  const adminId = req.admin?.admin_id;
+  if (!adminId) {
+    throw createHttpError(403, 'Authenticated administrator identity is missing.');
+  }
+
+  return String(adminId);
+};
+
+const assignmentResponse = (result) => {
+  const report = mapAssignmentReport(
+    result.report,
+    result.assignment
+  );
+
+  const assignment = result.assignment || report.assignment;
+  return {
+    ...report,
+    success: true,
+    report: {
+      ...report,
+      assignment,
+    },
+    assignment,
+  };
+};
+
+const requireCanonicalAdminResponse = (payload) => {
+  if (payload.canonicalPersonnelId && !payload.adminResponse) {
+    throw createHttpError(400, 'adminResponse is required for an assignment.');
+  }
+};
 
 // @desc    Authenticate an admin
 // @route   POST /api/admin/login
@@ -131,114 +170,97 @@ const getAllReports = async (req, res, next) => {
   try {
     const reports = await reportRepository.findAll();
 
-    res.json(reports);
+    // Keep the historical raw array contract while adding canonical
+    // assignment aliases used by the Phase 2B client.
+    res.json(reports.map((report) => mapAssignmentReport(report)));
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Assign personnel to a report
+// @desc    Assign one active personnel account to a report
 // @route   POST /api/admin/reports/:id/assign
 // @access  Private/Admin
 const assignPersonnel = async (req, res, next) => {
   try {
-    const {
-      assignedPersonnelIds = [],
-      priority,
-      handledById: requestedHandlerId = null,
-    } = req.body || {};
-
-    if (!Array.isArray(assignedPersonnelIds)) {
-      throw createHttpError(400, 'assignedPersonnelIds must be an array.');
-    }
-
-    if (assignedPersonnelIds.length > 50) {
-      throw createHttpError(400, 'A report cannot be assigned to more than 50 personnel.');
-    }
-
-    const normalizedPersonnelIds = assignedPersonnelIds.map((personnelId) => {
-      if (
-        typeof personnelId !== 'string' ||
-        !ASSIGNMENT_ID_PATTERN.test(personnelId.trim().toUpperCase())
-      ) {
-        throw createHttpError(
-          400,
-          'Every assigned personnel ID must use PERS-XXXX or legacy RES-XXXXXXXX format.'
-        );
-      }
-
-      return personnelId.trim().toUpperCase();
+    const adminId = requireAdminActor(req);
+    const payload = validateReportAssignmentPayload(req.body);
+    requireCanonicalAdminResponse(payload);
+    const result = await assignPersonnelToReport({
+      reportId: normalizeReportId(req.params.id),
+      assignedPersonnelIds: payload.assignedPersonnelIds,
+      canonicalPersonnelId: payload.canonicalPersonnelId,
+      handledById: payload.handledById,
+      adminResponse: payload.adminResponse,
+      priority: payload.priority,
+      adminId,
     });
 
-    const uniqueAssignmentIds = [...new Set(normalizedPersonnelIds)];
-    if (
-      requestedHandlerId !== undefined &&
-      requestedHandlerId !== null &&
-      typeof requestedHandlerId !== 'string'
-    ) {
-      throw createHttpError(400, 'handledById must be a PERS-XXXX string or null.');
-    }
-
-    const handledById =
-      typeof requestedHandlerId === 'string' && requestedHandlerId.trim()
-        ? requestedHandlerId.trim().toUpperCase()
-        : null;
-
-    // Admin clients intentionally omit handledById. When a personnel client
-    // supplies it, it must identify a real personnel_accounts record.
-    if (handledById && !PERSONNEL_ID_PATTERN.test(handledById)) {
-      throw createHttpError(400, 'handledById must use the PERS-XXXX format.');
-    }
-
-    if (
-      priority !== undefined &&
-      (typeof priority !== 'string' || !priority.trim() || priority.length > 20)
-    ) {
-      throw createHttpError(400, 'priority must be a valid non-empty string.');
-    }
-
-    const report = await reportRepository.findByReportId(req.params.id);
-
-    if (!report) {
-      throw createHttpError(404, 'Report not found.');
-    }
-
-    const oldStatus = report.status;
-    const adminId = req.resident.admin_id || req.resident.resident_id;
-    const updatedReport = await assignPersonnelToReport({
-      report,
-      assignedPersonnelIds: uniqueAssignmentIds,
-      priority: priority?.trim() || report.priority,
-      handledById,
-      updatedByAdminId: adminId,
-    });
-
-    for (const personnelId of uniqueAssignmentIds) {
-      await notificationRepository.createNotification({
-        residentId: personnelId,
-        reportId: report.report_id,
-        title: 'New Task Assigned',
-        message: `You have been assigned to report: ${report.title}`,
-      });
-    }
-
-    await historyRepository.createHistory({
-      residentId: report.resident_id,
-      reportId: report.report_id,
-      action: 'ASSIGNED',
-      oldStatus,
-      newStatus: 'In Progress',
-      description:
-        `Report assigned to ${uniqueAssignmentIds.length} personnel with ${
-          priority?.trim() || report.priority
-        } priority.`,
-    });
-
-    res.json(updatedReport);
+    res.json(assignmentResponse(result));
   } catch (error) {
     next(error);
   }
 };
+
+// @desc    Reassign a report to a different active personnel account
+// @route   POST /api/admin/reports/:id/reassign
+// @access  Private/Admin
+const reassignPersonnel = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const payload = validateReportAssignmentPayload(req.body);
+    requireCanonicalAdminResponse(payload);
+    const result = await reassignPersonnelToReport({
+      reportId: normalizeReportId(req.params.id),
+      assignedPersonnelIds: payload.assignedPersonnelIds,
+      canonicalPersonnelId: payload.canonicalPersonnelId,
+      handledById: payload.handledById,
+      adminResponse: payload.adminResponse,
+      priority: payload.priority,
+      adminId,
+    });
+
+    res.json(assignmentResponse(result));
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get the current report assignment and personnel details
+// @route   GET /api/admin/reports/:id/assignment
+// @access  Private/Admin
+const getAssignment = async (req, res, next) => {
+  try {
+    requireAdminActor(req);
+    const result = await getReportAssignment({
+      reportId: normalizeReportId(req.params.id),
+    });
+
+    res.json(assignmentResponse(result));
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Remove the current report assignment
+// @route   POST /api/admin/reports/:id/unassign
+// @access  Private/Admin
+const unassignPersonnel = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const result = await unassignPersonnelFromReport({
+      reportId: normalizeReportId(req.params.id),
+      adminId,
+    });
+
+    res.json(assignmentResponse(result));
+  } catch (error) {
+    next(error);
+  }
+};
+
+// DELETE is the explicit REST alias used by newer admin clients.
+const deleteReportAssignment = unassignPersonnel;
 
 // Shared personnel handlers keep /api/admin/personnel and the original
 // /api/admin/create-personnel alias on the same production implementation.
@@ -254,47 +276,36 @@ const approveReportCompletion = async (
   next
 ) => {
   try {
-    const report =
-      await reportRepository.findByReportId(
-        req.params.id
-      );
-
-    if (!report) {
-      res.status(404);
-      throw new Error('Report not found');
-    }
-
-    const oldStatus = report.status;
-    const adminId = req.resident.admin_id || req.resident.resident_id;
-
-    await completePersonnelReport({
-      report,
+    const adminId = requireAdminActor(req);
+    const result = await completePersonnelReport({
+      reportId: normalizeReportId(req.params.id),
       updatedByAdminId: adminId,
     });
 
-    await notificationRepository.createNotification({
-      residentId: report.resident_id,
-      reportId: report.report_id,
-      title: 'Report Completed',
-      message:
-        `Your waste report has been completed. ID: ${report.report_id}`
-    });
-
-    await historyRepository.createHistory({
-      residentId: report.resident_id,
-      reportId: report.report_id,
-      action: 'COMPLETED',
-      oldStatus,
-      newStatus: 'Completed',
-      description:
-        `Admin approved cleanup for report '${report.title}'.`
-    });
+    // Completion is already committed with its history audit. Notification
+    // delivery is ancillary and must not turn a successful approval into a
+    // false failure.
+    try {
+      await notificationRepository.createNotification({
+        residentId: result.report.resident_id,
+        reportId: result.report.report_id,
+        title: 'Report Completed',
+        message:
+          `Your waste report has been completed. ID: ${result.report.report_id}`,
+      });
+    } catch (notificationError) {
+      logError(
+        req.requestId,
+        'COMPLETION_NOTIFICATION',
+        `Unable to notify resident ${result.report.resident_id}: ${notificationError.message}`
+      );
+    }
 
     res.json({
-      message:
-        'Report completion approved and notification sent.'
+      success: true,
+      message: 'Report completion approved.',
+      report: mapAssignmentReport(result.report),
     });
-
   } catch (error) {
     next(error);
   }
@@ -305,6 +316,11 @@ module.exports = {
   getCurrentAdmin,
   getAllReports,
   assignPersonnel,
+  reassignPersonnel,
+  getAssignment,
+  getReportAssignment: getAssignment,
+  unassignPersonnel,
+  deleteReportAssignment,
   getPersonnel,
   createPersonnel,
   approveReportCompletion,

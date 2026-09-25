@@ -36,7 +36,7 @@ const mapCurrentAssignment = (personnel) => {
 
   return {
     reportId: personnel.current_assignment_report_id,
-    title: personnel.assignment_title || null,
+    title: personnel.current_assignment || personnel.assignment_title || null,
     category: personnel.assignment_category || null,
     description: personnel.assignment_description || null,
     reportStatus: personnel.assignment_report_status || null,
@@ -52,48 +52,62 @@ const mapCurrentAssignment = (personnel) => {
   };
 };
 
-const mapPersonnel = (personnel) => ({
-  personnelId: personnel.personnel_id,
-  serverId: personnel.personnel_id,
-  firstName: personnel.first_name,
-  lastName: personnel.last_name,
-  fullName: `${personnel.first_name} ${personnel.last_name}`.trim(),
-  address: personnel.address || '',
-  gmail: personnel.email,
-  email: personnel.email,
-  username: personnel.username,
-  role: personnel.role || 'PERSONNEL',
-  status: personnel.status,
-  online: personnel.status === 'ONLINE',
-  cleaning: personnel.status === 'CLEANING',
-  isOnline: personnel.status === 'ONLINE',
-  isCleaning: personnel.status === 'CLEANING',
-  isActive: personnel.enabled === true && !personnel.deleted_at,
-  isDisabled: personnel.enabled === false,
-  isDeleted: Boolean(personnel.deleted_at),
-  lastActive: personnel.last_active || null,
-  currentAssignment: mapCurrentAssignment(personnel),
-  assignmentReportId: personnel.current_assignment_report_id || null,
-  assignmentLatitude:
-    personnel.current_assignment_location?.latitude ??
-    personnel.assignment_latitude ??
-    null,
-  assignmentLongitude:
-    personnel.current_assignment_location?.longitude ??
-    personnel.assignment_longitude ??
-    null,
-  phoneNumber: personnel.phone_number || '',
-  enabled: personnel.enabled,
-  disabledAt: personnel.disabled_at || null,
-  deletedAt: personnel.deleted_at || null,
-  createdById: personnel.created_by_admin_id || null,
-  updatedById: personnel.updated_by_admin_id || null,
-  disabledById: personnel.disabled_by_admin_id || null,
-  deletedById: personnel.deleted_by_admin_id || null,
-  dateCreated: personnel.created_at || null,
-  createdAt: personnel.created_at || null,
-  updatedAt: personnel.updated_at || null,
-});
+const mapPersonnel = (personnel) => {
+  const cleaning = personnel.is_cleaning === true
+    || String(personnel.status || '').toUpperCase() === 'CLEANING';
+
+  return {
+    personnelId: personnel.personnel_id,
+    serverId: personnel.personnel_id,
+    firstName: personnel.first_name,
+    lastName: personnel.last_name,
+    fullName: `${personnel.first_name} ${personnel.last_name}`.trim(),
+    address: personnel.address || '',
+    gmail: personnel.email,
+    email: personnel.email,
+    username: personnel.username,
+    profileImage: personnel.profile_image || '',
+    profileImageUrl: personnel.profile_image || '',
+    avatarUrl: personnel.profile_image || '',
+    role: personnel.role || 'PERSONNEL',
+    status: personnel.status,
+    online: personnel.status === 'ONLINE' && !cleaning,
+    cleaning,
+    is_cleaning: cleaning,
+    isOnline: personnel.status === 'ONLINE' && !cleaning,
+    isCleaning: cleaning,
+    isActive: personnel.enabled === true && !personnel.deleted_at,
+    isDisabled: personnel.enabled === false,
+    isDeleted: Boolean(personnel.deleted_at),
+    lastActive: personnel.last_active || null,
+    currentAssignment: mapCurrentAssignment(personnel),
+    currentAssignmentText: personnel.current_assignment || null,
+    current_assignment: personnel.current_assignment || null,
+    current_assignment_report_id: personnel.current_assignment_report_id || null,
+    current_assignment_location: personnel.current_assignment_location || null,
+    current_assignment_assigned_at: personnel.current_assignment_assigned_at || null,
+    assignmentReportId: personnel.current_assignment_report_id || null,
+    assignmentLatitude:
+      personnel.current_assignment_location?.latitude ??
+      personnel.assignment_latitude ??
+      null,
+    assignmentLongitude:
+      personnel.current_assignment_location?.longitude ??
+      personnel.assignment_longitude ??
+      null,
+    phoneNumber: personnel.phone_number || '',
+    enabled: personnel.enabled,
+    disabledAt: personnel.disabled_at || null,
+    deletedAt: personnel.deleted_at || null,
+    createdById: personnel.created_by_admin_id || null,
+    updatedById: personnel.updated_by_admin_id || null,
+    disabledById: personnel.disabled_by_admin_id || null,
+    deletedById: personnel.deleted_by_admin_id || null,
+    dateCreated: personnel.created_at || null,
+    createdAt: personnel.created_at || null,
+    updatedAt: personnel.updated_at || null,
+  };
+};
 
 const findRequiredPersonnel = async (personnelId) => {
   const personnel = await personnelRepository.findByPersonnelId(personnelId);
@@ -410,6 +424,13 @@ const updatePersonnelStatus = async (req, res, next) => {
       throw createHttpError(
         409,
         'A current report assignment is required before setting status to CLEANING.'
+      );
+    }
+
+    if (status !== 'CLEANING' && existing.current_assignment_report_id) {
+      throw createHttpError(
+        409,
+        'Personnel cannot leave CLEANING while a report assignment is active. Unassign the report first.'
       );
     }
 

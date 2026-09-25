@@ -8,6 +8,7 @@ const {
   createResident,
   updateResident,
   updatePassword: updateResidentPassword,
+  touchLastActive: touchResidentLastActive,
 } = require('../repositories/residentRepository');
 
 const {
@@ -40,6 +41,7 @@ const {
 } = require('../repositories/personnelRepository');
 
 const generateToken = require('../utils/generateToken');
+const { isEligibleResident } = require('../utils/residentAuth');
 const {
   generateResidentId,
   generateRegistrationId,
@@ -105,6 +107,11 @@ const mapResidentResponse = (user) => ({
   email: user.email,
   address: user.address || '',
   profileImage: user.profile_image || '',
+  role: user.role || 'RESIDENT',
+  status: user.status || 'AVAILABLE',
+  createdAt: user.created_at || null,
+  updatedAt: user.updated_at || null,
+  lastActive: user.last_active || user.updated_at || user.created_at || null,
 });
 
 const mapAdminResponse = (user) => ({
@@ -677,12 +684,24 @@ const loginResident = async (req, res, next) => {
 
     if (
       resident &&
+      isEligibleResident(resident) &&
       await bcrypt.compare(password, resident.password_hash)
     ) {
+      let lastActive = resident.last_active || null;
+      try {
+        lastActive = await touchResidentLastActive(resident.resident_id) || lastActive;
+      } catch (activityError) {
+        // Activity telemetry must not prevent a valid resident login.
+        console.warn(`[AUTH] Unable to update resident activity: ${activityError.message}`);
+      }
+
       res.json({
         success: true,
         token: generateToken(resident.resident_id),
-        resident: mapLoginResponse(resident, false),
+        resident: {
+          ...mapLoginResponse(resident, false),
+          lastActive: lastActive || resident.updated_at || resident.created_at || null,
+        },
       });
 
       logInfo(

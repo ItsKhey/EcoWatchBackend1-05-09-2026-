@@ -6,9 +6,10 @@ const logger = (req, res, next) => {
 
   res.on('finish', () => {
     const duration = Date.now() - start;
-    console.log(`[REQUEST] ${req.method} ${req.originalUrl} [ID: ${requestId}] [STATUS: ${res.statusCode}] [TIME: ${duration}ms]`);
+    // req.path omits query parameters such as reporter search terms and IDs.
+    console.log(`[REQUEST] ${req.method} ${req.path} [ID: ${requestId}] [STATUS: ${res.statusCode}] [TIME: ${duration}ms]`);
 
-    if (req.originalUrl.startsWith('/api/auth/profile')) {
+    if (req.path.startsWith('/api/auth/profile')) {
       console.log(`[PROFILE_DEBUG] requestId=${requestId} responseStatus=${res.statusCode}`);
     }
   });
@@ -17,7 +18,7 @@ const logger = (req, res, next) => {
 };
 
 const logProfileRequest = (req, message) => {
-  if (req.originalUrl.startsWith('/api/auth/profile')) {
+  if (req.path.startsWith('/api/auth/profile')) {
     logInfo(req.requestId, 'PROFILE_DEBUG', message);
   }
 };

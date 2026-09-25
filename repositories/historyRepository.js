@@ -48,8 +48,8 @@ async function createHistory({
   isDeleted = false,
   deletedAt = null,
   timestamp = null,
-}) {
-  const result = await pool.query(
+}, queryable = pool) {
+  const result = await queryable.query(
     `
     INSERT INTO report_histories (
       resident_id,

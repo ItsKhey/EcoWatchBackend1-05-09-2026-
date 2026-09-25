@@ -6,6 +6,20 @@ const { generateReportId } = require('../utils/generateId');
 const { uploadImage } = require('../services/cloudinaryService');
 const { logInfo, logError } = require('../utils/logger');
 
+const normalizeAssignedPersonnelIds = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed;
+  } catch (error) {
+    // Fall through for the comma-separated legacy representation.
+  }
+
+  return value.split(',').map((id) => id.trim()).filter(Boolean);
+};
+
 const normalizeReport = (report, sourceCollection = 'reports') => {
   if (!report) return null;
 
@@ -20,7 +34,10 @@ const normalizeReport = (report, sourceCollection = 'reports') => {
     imageUrl: report.image_url,
     status: report.status,
     adminResponse: report.admin_response || '',
-    assignedPersonnelIds: report.assigned_personnel_ids || [],
+    assignedPersonnelIds: normalizeAssignedPersonnelIds(report.assigned_personnel_ids),
+    assignedPersonnelId: report.assigned_personnel_id || null,
+    assignedByAdminId: report.assigned_by_admin_id || null,
+    assignedAt: report.assigned_at || null,
     priority: report.priority,
     isDeleted: sourceCollection === 'trash_reports' || report.is_deleted === true,
     deletedAt: report.deleted_at || null,
@@ -78,7 +95,10 @@ const reportInput = (report, overrides = {}) => ({
   imageUrl: report.image_url,
   status: report.status,
   adminResponse: report.admin_response || '',
-  assignedPersonnelIds: report.assigned_personnel_ids || [],
+  assignedPersonnelIds: normalizeAssignedPersonnelIds(report.assigned_personnel_ids),
+  assignedPersonnelId: report.assigned_personnel_id || null,
+  assignedByAdminId: report.assigned_by_admin_id || null,
+  assignedAt: report.assigned_at || null,
   priority: report.priority || 'Normal',
   isDeleted: false,
   deletedAt: null,

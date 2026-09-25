@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 
 const {
   findByResidentId,
+  touchLastActive: touchResidentLastActive,
 } = require('../repositories/residentRepository');
 
 const {
@@ -13,6 +14,7 @@ const {
   findByPersonnelId,
 } = require('../repositories/personnelRepository');
 
+const { isEligibleResident } = require('../utils/residentAuth');
 const { logError, logProfileRequest } = require('../utils/logger');
 
 const protect = async (req, res, next) => {
@@ -20,7 +22,7 @@ const protect = async (req, res, next) => {
 
   logProfileRequest(
     req,
-    `method=${req.method} route=${req.originalUrl}`
+    `method=${req.method} route=${req.path}`
   );
 
   logProfileRequest(
@@ -73,6 +75,11 @@ const protect = async (req, res, next) => {
       const resolvedAdmin = isAdminToken
         || (user && user.admin_id && String(user.role || '').toUpperCase() === 'ADMIN');
 
+      if (!resolvedAdmin && user.resident_id && !isEligibleResident(user)) {
+        res.status(401);
+        throw new Error('Resident account is disabled or unauthorized');
+      }
+
       /*
        * Keep req.resident for compatibility with the
        * existing controllers/routes.
@@ -83,6 +90,18 @@ const protect = async (req, res, next) => {
         resident_id: user.resident_id || user.admin_id || user.residentId,
         admin_id: user.admin_id || user.resident_id || user.adminId
       };
+
+      if (!resolvedAdmin && user.resident_id) {
+        try {
+          await touchResidentLastActive(user.resident_id);
+        } catch (activityError) {
+          logError(
+            req.requestId,
+            'AUTH',
+            `Unable to update resident activity: ${activityError.message}`
+          );
+        }
+      }
 
       if (resolvedAdmin) {
         req.admin = user;

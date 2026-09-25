@@ -40,8 +40,8 @@ async function createNotification({
   title,
   message,
   isRead = false,
-}) {
-  const result = await pool.query(
+}, queryable = pool) {
+  const result = await queryable.query(
     `
     INSERT INTO notifications (
       resident_id,

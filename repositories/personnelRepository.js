@@ -10,6 +10,9 @@ const PERSONNEL_SELECT_FIELDS = `
   p.role,
   p.status,
   p.last_active,
+  p.is_cleaning,
+  p.current_assignment,
+  p.profile_image,
   p.current_assignment_report_id,
   p.current_assignment_location,
   p.current_assignment_assigned_at,
@@ -176,6 +179,108 @@ async function findActiveByIds(personnelIds, { lock = false, queryable = pool } 
     ${lock ? 'FOR UPDATE' : ''}
     `,
     [personnelIds]
+  );
+
+  return result.rows;
+}
+
+/**
+ * Returns both available and unavailable accounts for assignment checks. A
+ * missing row is reported separately from a disabled/deleted row so callers
+ * can return an accurate 404 or 409 instead of a generic validation error.
+ * IDs are sorted before locking to give concurrent reassignments a stable
+ * lock order.
+ */
+async function findByIdsForAssignment(
+  personnelIds,
+  { lock = false, queryable = pool } = {}
+) {
+  if (!personnelIds.length) {
+    return [];
+  }
+
+  const result = await queryable.query(
+    `
+    SELECT
+      p.*,
+      r.title AS assignment_title,
+      r.category AS assignment_category,
+      r.description AS assignment_description,
+      r.latitude AS assignment_latitude,
+      r.longitude AS assignment_longitude,
+      r.status AS assignment_report_status,
+      r.priority AS assignment_priority
+    FROM personnel_accounts p
+    LEFT JOIN reports r
+      ON r.report_id = p.current_assignment_report_id
+    WHERE p.personnel_id = ANY($1::varchar[])
+    ORDER BY p.personnel_id
+    ${lock ? 'FOR UPDATE OF p' : ''}
+    `,
+    [personnelIds]
+  );
+
+  return result.rows;
+}
+
+async function findByCurrentAssignmentReportId(
+  reportId,
+  { lock = false, queryable = pool } = {}
+) {
+  const result = await queryable.query(
+    `
+    SELECT
+      p.*,
+      r.title AS assignment_title,
+      r.category AS assignment_category,
+      r.description AS assignment_description,
+      r.latitude AS assignment_latitude,
+      r.longitude AS assignment_longitude,
+      r.status AS assignment_report_status,
+      r.priority AS assignment_priority
+    FROM personnel_accounts p
+    LEFT JOIN reports r
+      ON r.report_id = p.current_assignment_report_id
+    WHERE p.current_assignment_report_id = $1
+    ORDER BY p.personnel_id
+    ${lock ? 'FOR UPDATE OF p' : ''}
+    `,
+    [reportId]
+  );
+
+  return result.rows;
+}
+
+/**
+ * Locks every personnel row that could be affected by a report assignment in
+ * one deterministic query. The report-scoped predicate also catches legacy
+ * rows whose report JSON and canonical report column drifted apart.
+ */
+async function findForAssignmentLocks(
+  personnelIds,
+  reportId,
+  { queryable = pool } = {}
+) {
+  const result = await queryable.query(
+    `
+    SELECT
+      p.*,
+      r.title AS assignment_title,
+      r.category AS assignment_category,
+      r.description AS assignment_description,
+      r.latitude AS assignment_latitude,
+      r.longitude AS assignment_longitude,
+      r.status AS assignment_report_status,
+      r.priority AS assignment_priority
+    FROM personnel_accounts p
+    LEFT JOIN reports r
+      ON r.report_id = p.current_assignment_report_id
+    WHERE p.personnel_id = ANY($1::varchar[])
+       OR p.current_assignment_report_id = $2
+    ORDER BY p.personnel_id
+    FOR UPDATE OF p
+    `,
+    [personnelIds, reportId]
   );
 
   return result.rows;
@@ -353,6 +458,7 @@ async function updateStatus(personnelId, status, updatedByAdminId, queryable = p
     `
     UPDATE personnel_accounts
     SET status = $1,
+        is_cleaning = ($1 = 'CLEANING'),
         updated_by_admin_id = $2
     WHERE personnel_id = $3
       AND enabled = true
@@ -388,6 +494,7 @@ async function disablePersonnel(personnelId, disabledByAdminId, queryable = pool
     `
     UPDATE personnel_accounts
     SET enabled = false,
+        is_cleaning = false,
         disabled_at = COALESCE(disabled_at, NOW()),
         disabled_by_admin_id = $1,
         updated_by_admin_id = $1,
@@ -410,6 +517,7 @@ async function enablePersonnel(personnelId, updatedByAdminId, queryable = pool) 
     `
     UPDATE personnel_accounts
     SET enabled = true,
+        is_cleaning = false,
         disabled_at = NULL,
         disabled_by_admin_id = NULL,
         updated_by_admin_id = $1,
@@ -432,6 +540,7 @@ async function deletePersonnel(personnelId, deletedByAdminId, queryable = pool) 
     `
     UPDATE personnel_accounts
     SET enabled = false,
+        is_cleaning = false,
         status = 'OFFLINE',
         disabled_at = COALESCE(disabled_at, NOW()),
         disabled_by_admin_id = COALESCE(disabled_by_admin_id, $1),
@@ -456,6 +565,7 @@ async function restorePersonnel(personnelId, updatedByAdminId, queryable = pool)
     `
     UPDATE personnel_accounts
     SET enabled = true,
+        is_cleaning = false,
         disabled_at = NULL,
         disabled_by_admin_id = NULL,
         deleted_at = NULL,
@@ -478,21 +588,29 @@ async function syncReportAssignments(
   {
     reportId,
     location = null,
+    assignmentText = null,
+    assignedAt = null,
     previousPersonnelIds = [],
     nextPersonnelIds = [],
     updatedByAdminId,
   },
   queryable = pool
 ) {
-  const previousIds = [...new Set(previousPersonnelIds)].filter(Boolean);
-  const nextIds = [...new Set(nextPersonnelIds)].filter(Boolean);
+  const previousIds = [...new Set(previousPersonnelIds)]
+    .filter(Boolean)
+    .map((id) => String(id).trim().toUpperCase());
+  const nextIds = [...new Set(nextPersonnelIds)]
+    .filter(Boolean)
+    .map((id) => String(id).trim().toUpperCase());
   const idsToClear = previousIds.filter((personnelId) => !nextIds.includes(personnelId));
 
   if (idsToClear.length) {
     await queryable.query(
       `
       UPDATE personnel_accounts
-      SET current_assignment_report_id = NULL,
+      SET is_cleaning = false,
+          current_assignment = NULL,
+          current_assignment_report_id = NULL,
           current_assignment_location = NULL,
           current_assignment_assigned_at = NULL,
           status = CASE
@@ -511,9 +629,11 @@ async function syncReportAssignments(
     await queryable.query(
       `
       UPDATE personnel_accounts
-      SET current_assignment_report_id = $1,
+      SET is_cleaning = true,
+          current_assignment = COALESCE($5::text, 'Report ' || $1::text),
+          current_assignment_report_id = $1,
           current_assignment_location = $2::jsonb,
-          current_assignment_assigned_at = NOW(),
+          current_assignment_assigned_at = COALESCE($6::timestamptz, NOW()),
           status = 'CLEANING',
           updated_by_admin_id = $3
       WHERE personnel_id = ANY($4::varchar[])
@@ -525,6 +645,8 @@ async function syncReportAssignments(
         location ? JSON.stringify(location) : null,
         updatedByAdminId,
         nextIds,
+        assignmentText,
+        assignedAt,
       ]
     );
   }
@@ -533,12 +655,23 @@ async function syncReportAssignments(
 async function clearCurrentAssignmentsForReport(
   reportId,
   updatedByAdminId,
-  queryable = pool
+  queryable = pool,
+  { personnelIds = null } = {}
 ) {
+  const values = [updatedByAdminId, reportId];
+  let idFilter = '';
+
+  if (Array.isArray(personnelIds) && personnelIds.length) {
+    values.push(personnelIds);
+    idFilter = ` AND personnel_id = ANY($${values.length}::varchar[])`;
+  }
+
   const result = await queryable.query(
     `
     UPDATE personnel_accounts
-    SET current_assignment_report_id = NULL,
+    SET is_cleaning = false,
+        current_assignment = NULL,
+        current_assignment_report_id = NULL,
         current_assignment_location = NULL,
         current_assignment_assigned_at = NULL,
         status = CASE
@@ -547,9 +680,10 @@ async function clearCurrentAssignmentsForReport(
         END,
         updated_by_admin_id = $1
     WHERE current_assignment_report_id = $2
+    ${idFilter}
     RETURNING personnel_id
     `,
-    [updatedByAdminId, reportId]
+    values
   );
 
   return result.rows.map((row) => row.personnel_id);
@@ -562,6 +696,9 @@ module.exports = {
   findByUsername,
   findByEmail,
   findActiveByIds,
+  findByIdsForAssignment,
+  findByCurrentAssignmentReportId,
+  findForAssignmentLocks,
   findCredentialConflict,
   createPersonnel,
   updatePersonnel,

@@ -55,7 +55,7 @@ const errorHandler = (err, req, res, next) => {
 
   if (statusCode >= 500) {
     console.error(
-      `[ERROR] [ID: ${req.requestId}] ${req.method} ${req.originalUrl}:`,
+      `[ERROR] [ID: ${req.requestId}] ${req.method} ${req.path}:`,
       err
     );
   }

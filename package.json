@@ -7,11 +7,14 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "migrate:personnel": "node migration/migrate-personnel.js",
+    "migrate:report-assignments": "node migration/migrate-report-assignments.js",
     "migrate:admin-account-activity": "node migration/migrate-admin-account-activity.js",
+    "migrate:resident-account-activity": "node migration/migrate-resident-account-activity.js",
     "migrate:admin-identifiers": "node scripts/migrateAdminIdentifiers.js",
     "check:syntax": "node scripts/check-syntax.js",
+    "verify:assignment-contract": "node scripts/verify-report-assignment-contract.js",
     "verify:personnel": "node scripts/verify-personnel-registration.js",
-    "test": "npm run check:syntax"
+    "test": "npm run check:syntax && npm run verify:assignment-contract"
   },
   "keywords": [],
   "author": "",

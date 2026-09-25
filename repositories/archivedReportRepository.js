@@ -40,6 +40,9 @@ async function createArchivedReport({
   status = 'Pending',
   adminResponse = '',
   assignedPersonnelIds = [],
+  assignedPersonnelId = null,
+  assignedByAdminId = null,
+  assignedAt = null,
   priority = 'Normal',
   deletedAt = null,
   restoredAt = null,
@@ -58,6 +61,9 @@ async function createArchivedReport({
       status,
       admin_response,
       assigned_personnel_ids,
+      assigned_personnel_id,
+      assigned_by_admin_id,
+      assigned_at,
       priority,
       deleted_at,
       restored_at
@@ -65,7 +71,8 @@ async function createArchivedReport({
     VALUES (
       $1, $2, $3, $4, $5,
       $6, $7, $8, $9, $10,
-      $11, $12, $13, $14
+      $11, $12, $13, $14, $15,
+      $16, $17
     )
     RETURNING *
     `,
@@ -81,6 +88,9 @@ async function createArchivedReport({
       status,
       adminResponse,
       assignedPersonnelIds,
+      assignedPersonnelId,
+      assignedByAdminId,
+      assignedAt,
       priority,
       deletedAt,
       restoredAt,

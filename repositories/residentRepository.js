@@ -1,5 +1,211 @@
 const { pool } = require('../config/db');
 
+/*
+ * Public resident projections intentionally omit password_hash.  Activity
+ * column detection keeps the read compatible with databases that have not run
+ * the optional activity migration yet; after the migration it prefers the
+ * dedicated server-owned column and falls back to existing profile timestamps.
+ */
+const RESIDENT_PUBLIC_BASE_FIELDS = `
+  r.resident_id,
+  r.first_name,
+  r.last_name,
+  r.username,
+  r.email,
+  r.address,
+  r.profile_image,
+  r.is_verified,
+  r.role,
+  r.status,
+  r.phone_number,
+  r.created_at,
+  r.updated_at
+`;
+
+let residentActivityColumn;
+let residentActivityColumnPromise;
+
+async function getResidentActivityColumn(queryable = pool) {
+  if (residentActivityColumn) return residentActivityColumn;
+  if (residentActivityColumnPromise) return residentActivityColumnPromise;
+
+  residentActivityColumnPromise = queryable.query(
+    `
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'residents'
+        AND column_name = 'last_active'
+    ) AS available
+    `
+  )
+    .then((result) => {
+      residentActivityColumn = result.rows[0]?.available === true
+        ? 'r.last_active'
+        : 'r.updated_at';
+      return residentActivityColumn;
+    })
+    .catch((error) => {
+      residentActivityColumnPromise = null;
+      throw error;
+    });
+
+  return residentActivityColumnPromise;
+}
+
+function residentPublicFields(activityColumn) {
+  return `
+    ${RESIDENT_PUBLIC_BASE_FIELDS},
+    COALESCE(${activityColumn}, r.updated_at, r.created_at) AS last_active
+  `;
+}
+
+async function findPublicByResidentId(residentId, queryable = pool) {
+  const activityColumn = await getResidentActivityColumn(queryable);
+  const result = await queryable.query(
+    `
+    SELECT
+      ${residentPublicFields(activityColumn)},
+      (
+        SELECT COUNT(*)::int
+        FROM (
+          SELECT report_count.report_id
+          FROM reports report_count
+          WHERE report_count.resident_id = r.resident_id
+          UNION
+          SELECT archived_count.report_id
+          FROM archived_reports archived_count
+          WHERE archived_count.resident_id = r.resident_id
+        ) report_count
+      ) AS total_reports
+    FROM residents r
+    WHERE r.resident_id = $1
+      AND lower(trim(COALESCE(r.role, 'RESIDENT'))) = 'resident'
+    LIMIT 1
+    `,
+    [residentId]
+  );
+
+  return result.rows[0] || null;
+}
+
+function buildAdminResidentConditions(options = {}, values = []) {
+  const conditions = ["lower(trim(COALESCE(r.role, 'RESIDENT'))) = 'resident'"];
+
+  if (options.status === 'ACTIVE') {
+    conditions.push(`lower(trim(COALESCE(r.status, 'AVAILABLE'))) NOT IN (
+      'disabled', 'inactive', 'blocked', 'suspended', 'deleted'
+    )`);
+  } else if (options.status === 'DISABLED') {
+    conditions.push(`lower(trim(COALESCE(r.status, ''))) IN (
+      'disabled', 'inactive', 'blocked', 'suspended', 'deleted'
+    )`);
+  }
+
+  if (options.search) {
+    values.push(`%${options.search}%`);
+    const searchParameter = `$${values.length}`;
+    conditions.push(`(
+      r.resident_id ILIKE ${searchParameter}
+      OR r.first_name ILIKE ${searchParameter}
+      OR r.last_name ILIKE ${searchParameter}
+      OR concat_ws(' ', r.first_name, r.last_name) ILIKE ${searchParameter}
+      OR r.username ILIKE ${searchParameter}
+      OR r.email ILIKE ${searchParameter}
+    )`);
+  }
+
+  return conditions;
+}
+
+async function countAllForAdmin(options = {}, queryable = pool) {
+  const values = [];
+  const conditions = buildAdminResidentConditions(options, values);
+  const result = await queryable.query(
+    `
+    SELECT COUNT(*)::int AS total
+    FROM residents r
+    WHERE ${conditions.join(' AND ')}
+    `,
+    values
+  );
+  return Number(result.rows[0]?.total || 0);
+}
+
+async function findAllForAdmin(options = {}, queryable = pool) {
+  const activityColumn = await getResidentActivityColumn(queryable);
+  const values = [];
+  const conditions = buildAdminResidentConditions(options, values);
+
+  values.push(options.limit);
+  const limitParameter = `$${values.length}`;
+  values.push(options.offset);
+  const offsetParameter = `$${values.length}`;
+
+  const result = await queryable.query(
+    `
+    SELECT
+      ${residentPublicFields(activityColumn)},
+      (
+        SELECT COUNT(*)::int
+        FROM (
+          SELECT report_count.report_id
+          FROM reports report_count
+          WHERE report_count.resident_id = r.resident_id
+          UNION
+          SELECT archived_count.report_id
+          FROM archived_reports archived_count
+          WHERE archived_count.resident_id = r.resident_id
+        ) report_count
+      ) AS total_reports,
+      COUNT(*) OVER() AS total_count
+    FROM residents r
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY
+      lower(COALESCE(r.last_name, '')),
+      lower(COALESCE(r.first_name, '')),
+      r.resident_id
+    LIMIT ${limitParameter} OFFSET ${offsetParameter}
+    `,
+    values
+  );
+
+  return result.rows;
+}
+
+/**
+ * Records resident activity without exposing or returning credentials.  The
+ * fallback keeps older installations functional until the idempotent
+ * last_active migration has been applied.
+ */
+async function touchLastActive(residentId) {
+  const activityColumn = await getResidentActivityColumn();
+  if (activityColumn === 'r.last_active') {
+    const result = await pool.query(
+      `
+      UPDATE residents
+      SET last_active = NOW()
+      WHERE resident_id = $1
+      RETURNING last_active
+      `,
+      [residentId]
+    );
+    return result.rows[0]?.last_active || null;
+  }
+
+  const fallback = await pool.query(
+    `
+    UPDATE residents
+    SET updated_at = NOW()
+    WHERE resident_id = $1
+    RETURNING updated_at
+    `,
+    [residentId]
+  );
+  return fallback.rows[0]?.updated_at || null;
+}
+
 async function findByIdentifier(identifier) {
   const result = await pool.query(
     `
@@ -75,6 +281,9 @@ async function findLegacyPersonnelByIds(
     FROM residents
     WHERE resident_id = ANY($1::varchar[])
       AND lower(role) = lower('Environmental Services Personnel')
+      AND lower(trim(COALESCE(status, 'AVAILABLE'))) NOT IN (
+        'disabled', 'inactive', 'blocked', 'suspended', 'deleted'
+      )
     ORDER BY resident_id
     ${lock ? 'FOR UPDATE' : ''}
     `,
@@ -222,6 +431,10 @@ async function updatePassword(residentId, passwordHash) {
 }
 
 module.exports = {
+  findPublicByResidentId,
+  findAllForAdmin,
+  countAllForAdmin,
+  touchLastActive,
   findByIdentifier,
   findByResidentId,
   findByUsername,
