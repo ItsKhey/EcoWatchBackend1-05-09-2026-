@@ -110,7 +110,6 @@ async function sendResidentReportNotification({
       // OS fallback notification with the same title/body and a report-aware
       // click action. The data keys remain the source for exact deep linking.
       notification: { title, body: message },
-      clickAction: 'com.example.myecowatch1.action.OPEN_NOTIFICATION',
       // The data keys are also used by the app's foreground renderer. A notification
       // payload here would be rendered by the OS without these app extras.
       data: {
