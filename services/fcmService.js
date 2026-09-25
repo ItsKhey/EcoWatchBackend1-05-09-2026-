@@ -105,13 +105,10 @@ async function sendResidentReportNotification({
   try {
     const messageId = await messaging.send({
       token,
-      // Include both data and notification payloads. Foreground delivery is
-      // rendered by the app's EcoWatch channel; background delivery gets an
-      // OS fallback notification with the same title/body and a report-aware
-      // click action. The data keys remain the source for exact deep linking.
+      // Foreground messages are rendered by the app's channel. When the app
+      // is backgrounded, the notification payload provides a reliable OS
+      // fallback while data preserves exact report deep-link values.
       notification: { title, body: message },
-      // The data keys are also used by the app's foreground renderer. A notification
-      // payload here would be rendered by the OS without these app extras.
       data: {
         notificationId: String(notificationId),
         reportId: reportId ? String(reportId) : '',
