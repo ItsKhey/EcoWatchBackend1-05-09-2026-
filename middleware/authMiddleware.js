@@ -162,6 +162,35 @@ const protect = async (req, res, next) => {
   }
 };
 
+/**
+ * Narrows a valid authenticated session to a normal resident account. The
+ * generic protect middleware remains compatible with legacy personnel records
+ * for older routes, but notification and device-token routes must never allow
+ * an administrator or personnel compatibility identity.
+ */
+const protectResident = (req, res, next) => {
+  if (req.admin) {
+    const error = new Error('Not authorized as a resident.');
+    error.statusCode = 403;
+    return next(error);
+  }
+
+  const residentId = req.resident?.resident_id || req.resident?.residentId;
+  const role = String(req.resident?.role || '').trim().toUpperCase();
+  if (!residentId || role !== 'RESIDENT') {
+    const error = new Error('Not authorized as a resident.');
+    error.statusCode = 403;
+    return next(error);
+  }
+
+  req.auth = {
+    accountType: 'RESIDENT',
+    role: 'RESIDENT',
+    residentId,
+  };
+  return next();
+};
+
 const protectPersonnel = async (req, res, next) => {
   const authorization = req.headers.authorization;
 
@@ -240,4 +269,4 @@ const protectPersonnel = async (req, res, next) => {
   return next();
 };
 
-module.exports = { protect, protectPersonnel };
+module.exports = { protect, protectResident, protectPersonnel };

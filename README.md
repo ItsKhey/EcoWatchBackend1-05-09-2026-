@@ -52,13 +52,14 @@ MongoDB Atlas is retained only as a legacy data source for migration and verific
 Run the idempotent migrations before deploying the new API:
 
 ```bash
+npm run migrate:admin-identifiers
 npm run migrate:personnel
 npm run migrate:report-assignments
 npm run migrate:admin-account-activity
 npm run migrate:resident-account-activity
 ```
 
-The account-activity migrations add the server-owned `admins.last_active` and `residents.last_active` timestamps used by the admin account and reporter dashboards, plus their report lookup indexes. The same SQL files can be pasted into the Supabase SQL editor. The personnel migration creates `personnel_accounts`, `PERS-XXXX` ID generation, bcrypt-hash storage, Gmail/username constraints, lifecycle timestamps, admin audit fields, current-report assignment fields, indexes, and the `updated_at` trigger. PostgreSQL advisory-lock-backed triggers also serialize identity writes and enforce case-insensitive username/Gmail uniqueness across Personnel, Resident, and Admin tables, closing concurrent create/edit races in addition to the controller pre-checks.
+The account-activity migrations add the server-owned `admins.last_active` and `residents.last_active` timestamps used by the admin account and reporter dashboards, plus their report lookup indexes. The same SQL files can be pasted into the Supabase SQL editor. Run `npm run migrate:admin-identifiers` (`003-normalize-admin-identifiers.sql`) before deploying the canonical `ADM-XXXX` admin identity contract; it is idempotent, takes an advisory lock, and fails visibly if a legacy `RES-XXXXXXXX` administrator conflicts with an existing `ADM-XXXX` row. The personnel migration creates `personnel_accounts`, `PERS-XXXX` ID generation, bcrypt-hash storage, Gmail/username constraints, lifecycle timestamps, admin audit fields, current-report assignment fields, indexes, and the `updated_at` trigger. PostgreSQL advisory-lock-backed triggers also serialize identity writes and enforce case-insensitive username/Gmail uniqueness across Personnel, Resident, and Admin tables, closing concurrent create/edit races in addition to the controller pre-checks.
 
 ### Canonical report assignment migration (Phase 2B)
 
@@ -66,7 +67,7 @@ Run `npm run migrate:report-assignments` after the Phase 2A personnel migration 
 
 The migration also adds foreign keys, assignment indexes, synchronization checks/triggers, and an optional personnel `profile_image` URL for assignment avatars. It is safe to run repeatedly, but the API must not be deployed against a database that has not completed this migration. The migration command is intentionally not part of `npm test` and must be run explicitly against the target Supabase project.
 
-`npm test` performs a syntax check across all project JavaScript files and runs the assignment request-contract checks. `npm run verify:personnel` performs a real Supabase-backed create/hash/login verification with a uniquely named temporary account and cleans that account up afterward.
+`npm test` performs a syntax check across all project JavaScript files and runs the assignment request-contract checks. After applying `003`, `005`, and `006` to an approved staging project, run the read-only `npm run verify:schema` command; it checks required columns, constraints, indexes, legacy administrator identifiers, assignment references, and duplicate active assignments without changing data. `npm run verify:personnel` performs a real Supabase-backed create/hash/login verification with a uniquely named temporary account and cleans that account up afterward.
 
 ## API Endpoints
 
@@ -131,15 +132,35 @@ statistics endpoint. Resident responses never include `password_hash`.
 
 ### Reports
 
+Resident-owned routes remain available for the resident app:
+
 * `POST /api/reports` - Submit report with image (Multipart) (Protected)
 * `GET /api/reports/my-reports?view=default|archive|trash|all` - Get filtered reports for the current resident (Protected)
-* `PATCH /api/reports/:id/trash` - Move a report to trash (Protected)
+* `PATCH /api/reports/:id/trash` - Move a resident-owned report to trash (Protected)
 * `PATCH /api/reports/:id/soft-delete` - Legacy alias for moving a report to trash (Protected)
-* `PATCH /api/reports/:id/restore` - Restore a report from trash (Protected)
-* `PATCH /api/reports/:id/archive` - Archive a report (Protected)
-* `POST /api/reports/bulk-soft-delete` - Move reports to trash; body is an array of IDs (Protected)
-* `POST /api/reports/bulk-restore` - Restore reports; body is an array of IDs (Protected)
-* `POST /api/reports/bulk-archive` - Archive reports; body is an array of IDs (Protected)
+* `PATCH /api/reports/:id/restore` - Restore a resident-owned report from trash (Protected)
+* `PATCH /api/reports/:id/archive` - Archive a resident-owned report (Protected)
+* `POST /api/reports/bulk-soft-delete` - Move reports to trash; body may be an array or `{ "ids": [...] }` (Protected)
+* `POST /api/reports/bulk-restore` - Restore reports; body may be an array or `{ "ids": [...] }` (Protected)
+* `POST /api/reports/bulk-archive` - Archive reports; body may be an array or `{ "ids": [...] }` (Protected)
+
+Administrator-owned report routes use the same canonical report IDs but do not
+require a resident identity or infer an administrator from client input:
+
+* `GET /api/admin/reports?view=all|active|archive|trash&search=` - Return the deduplicated active/archive/trash directory with lifecycle and assignment metadata (Admin)
+* `POST /api/admin/reports/:id/move-to-archive` - Archive a report and release its active personnel assignment (Admin)
+* `POST /api/admin/reports/:id/move-to-trash` - Move a report to trash and release its active personnel assignment (Admin)
+* `POST /api/admin/reports/:id/restore` - Restore a report from trash or archive (Admin)
+* `DELETE /api/admin/reports/:id` - Permanently delete a report after releasing any active assignment (Admin)
+* `POST /api/admin/reports/bulk-move-to-archive` - Admin bulk archive with `{ "ids": ["REP-..."] }` (Admin)
+* `POST /api/admin/reports/bulk-move-to-trash` - Admin bulk trash with `{ "ids": ["REP-..."] }` (Admin)
+* `POST /api/admin/reports/bulk-restore` - Admin bulk restore with `{ "ids": ["REP-..."] }` (Admin)
+* `POST /api/admin/reports/bulk-delete` - Admin bulk permanent delete with `{ "ids": ["REP-..."] }` (Admin)
+* `POST /api/admin/reports/:id/approve` - Approve an in-progress cleanup as Completed and release its personnel assignment (Admin)
+
+Admin lifecycle writes and their history audit run in one database transaction.
+The authenticated `req.admin.admin_id` is the only actor written to the audit;
+client-supplied resident or administrator identifiers are never trusted.
 
 ### Report assignment integration (Phase 2B)
 
@@ -157,4 +178,6 @@ The report row and all old/new personnel rows are locked in a deterministic orde
 
 ### Render deployment
 
-Render should run `npm install` and `npm start`; the service listens on `process.env.PORT`. Configure `SUPABASE_DATABASE_URL`, `JWT_SECRET`, and the existing email/Cloudinary variables in Render environment settings. Run `npm run migrate:personnel`, `npm run migrate:report-assignments`, `npm run migrate:admin-account-activity`, and `npm run migrate:resident-account-activity` once against the target Supabase project before starting the new service version.
+Render should run `npm install` and `npm start`; the service listens on `process.env.PORT`. Configure `SUPABASE_DATABASE_URL`, `JWT_SECRET`, and the existing email/Cloudinary variables in Render environment settings. Run `npm run migrate:admin-identifiers`, `npm run migrate:personnel`, `npm run migrate:report-assignments`, `npm run migrate:admin-account-activity`, and `npm run migrate:resident-account-activity` once against the target Supabase project before starting the new service version. Verify the resulting schema and constraints in an approved staging project before production deployment; do not run the real-account personnel verification script against production.
+
+Before release, rotate any credential or Maps key that has ever appeared in a local environment file, shell history, source control, or application logs. Remove plaintext password copies/backups, restrict service-account keys to the deployed project, and verify the rotation in the provider dashboards. This repository intentionally does not reproduce or automate those owner-only rotations.

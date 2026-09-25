@@ -2,8 +2,12 @@ const reportRepository = require('../repositories/reportRepository');
 const archivedReportRepository = require('../repositories/archivedReportRepository');
 const trashReportRepository = require('../repositories/trashReportRepository');
 const historyRepository = require('../repositories/historyRepository');
+const personnelRepository = require('../repositories/personnelRepository');
 const { generateReportId } = require('../utils/generateId');
 const { uploadImage } = require('../services/cloudinaryService');
+const {
+  releaseReportAssignment,
+} = require('../services/reportAssignmentService');
 const { logInfo, logError } = require('../utils/logger');
 
 const normalizeAssignedPersonnelIds = (value) => {
@@ -84,6 +88,35 @@ const findReportInAnyCollection = async (reportId, residentId) => {
   return null;
 };
 
+const releaseAssignmentBeforeLifecycleMove = async (found) => {
+  if (!found?.report) return;
+
+  if (found.source === 'archived_reports') {
+    // Archived rows do not have the active reports foreign key, so clear any
+    // stale personnel pointer and assignment metadata before the row is
+    // restored, archived again, or deleted.
+    await personnelRepository.clearCurrentAssignmentsForReport(
+      found.report.report_id,
+      null
+    );
+    await archivedReportRepository.updateByReportId(
+      found.report.report_id,
+      {
+        assignedPersonnelIds: [],
+        assignedPersonnelId: null,
+        handledById: null,
+        status: String(found.report.status || '').trim().toLowerCase() === 'in progress'
+          ? 'Pending' : (found.report.status || 'Pending'),
+      }
+    );
+    return;
+  }
+
+  await releaseReportAssignment({
+    reportId: found.report.report_id,
+  });
+};
+
 const reportInput = (report, overrides = {}) => ({
   reportId: report.report_id,
   residentId: report.resident_id,
@@ -93,10 +126,14 @@ const reportInput = (report, overrides = {}) => ({
   latitude: report.latitude,
   longitude: report.longitude,
   imageUrl: report.image_url,
-  status: report.status,
+  status: String(report.status || '').trim().toLowerCase() === 'in progress'
+    ? 'Pending' : (report.status || 'Pending'),
   adminResponse: report.admin_response || '',
-  assignedPersonnelIds: normalizeAssignedPersonnelIds(report.assigned_personnel_ids),
-  assignedPersonnelId: report.assigned_personnel_id || null,
+  // Lifecycle moves release the active assignment. Keep the last admin/timestamp
+  // audit fields, but never carry an actionable personnel pointer into a new
+  // collection row.
+  assignedPersonnelIds: [],
+  assignedPersonnelId: null,
   assignedByAdminId: report.assigned_by_admin_id || null,
   assignedAt: report.assigned_at || null,
   priority: report.priority || 'Normal',
@@ -104,7 +141,7 @@ const reportInput = (report, overrides = {}) => ({
   deletedAt: null,
   isArchived: false,
   isRestored: true,
-  handledById: report.handled_by_id || null,
+  handledById: null,
   resolutionImageUrl: report.resolution_image_url || null,
   resolvedAt: report.resolved_at || null,
   ...overrides,
@@ -234,6 +271,8 @@ const softDeleteReport = async (req, res, next) => {
       throw new Error('Report not found');
     }
 
+    await releaseAssignmentBeforeLifecycleMove(found);
+
     if (found.source === 'trash_reports') {
       return res.json(normalizeReport(found.report, 'trash_reports'));
     }
@@ -277,6 +316,8 @@ const restoreReport = async (req, res, next) => {
       throw new Error('Report not found');
     }
 
+    await releaseAssignmentBeforeLifecycleMove(found);
+
     if (found.source === 'reports') {
       return res.json(normalizeReport(found.report));
     }
@@ -316,6 +357,8 @@ const archiveReport = async (req, res, next) => {
       throw new Error('Report not found');
     }
 
+    await releaseAssignmentBeforeLifecycleMove(found);
+
     if (found.source === 'archived_reports') {
       return res.json(normalizeReport(found.report, 'archived_reports'));
     }
@@ -347,12 +390,14 @@ const archiveReport = async (req, res, next) => {
 
 const bulkMoveReportsHandler = (targetCollection) => async (req, res, next) => {
   try {
-    const { ids = [] } = req.body;
+    const ids = Array.isArray(req.body) ? req.body : (req.body?.ids || []);
     let modifiedCount = 0;
 
     for (const id of ids) {
       const found = await findReportInAnyCollection(id, req.resident.residentId);
-      if (!found || found.source === targetCollection) continue;
+      if (!found) continue;
+      await releaseAssignmentBeforeLifecycleMove(found);
+      if (found.source === targetCollection) continue;
 
       const report = found.report;
       if (targetCollection === 'trash_reports') {
@@ -424,12 +469,13 @@ const bulkArchiveReports = bulkMoveReportsHandler('archived_reports');
 
 const bulkDeleteReports = async (req, res, next) => {
   try {
-    const { ids = [] } = req.body;
+    const ids = Array.isArray(req.body) ? req.body : (req.body?.ids || []);
     let modifiedCount = 0;
 
     for (const id of ids) {
       const found = await findReportInAnyCollection(id, req.resident.residentId);
       if (!found) continue;
+      await releaseAssignmentBeforeLifecycleMove(found);
 
       if (found.source === 'reports') {
         await reportRepository.deleteByReportId(found.report.report_id);
@@ -461,6 +507,23 @@ const updateReport = async (req, res, next) => {
   const residentId = req.resident.residentId || req.resident.resident_id;
 
   try {
+    const forbiddenAdminFields = [
+      'status',
+      'adminResponse',
+      'admin_response',
+      'assignedPersonnelId',
+      'assigned_personnel_id',
+      'assignedPersonnelIds',
+      'assigned_personnel_ids',
+    ].filter((field) => Object.prototype.hasOwnProperty.call(req.body || {}, field));
+    if (forbiddenAdminFields.length) {
+      const error = new Error(
+        `Report status and response are administrator-owned; remove: ${forbiddenAdminFields.join(', ')}.`
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
     const report = await reportRepository.findByReportId(req.params.id);
     if (!report || report.resident_id !== residentId || report.is_deleted || report.is_archived) {
       res.status(404);
@@ -482,18 +545,6 @@ const updateReport = async (req, res, next) => {
       imageUrl,
     };
 
-    if (req.body.status && req.body.status !== report.status) {
-      updates.status = req.body.status;
-      await logHistory({
-        residentId: req.resident.residentId,
-        reportId: report.report_id,
-        action: 'STATUS_CHANGED',
-        oldStatus: report.status,
-        newStatus: req.body.status,
-        description: `Status changed from ${report.status} to ${req.body.status}`,
-      });
-    }
-
     const updatedReport = await reportRepository.updateReport(report.report_id, updates);
     res.json(normalizeReport(updatedReport));
   } catch (error) {
@@ -508,6 +559,8 @@ const deleteReport = async (req, res, next) => {
       res.status(404);
       throw new Error('Report not found');
     }
+
+    await releaseAssignmentBeforeLifecycleMove(found);
 
     if (found.source === 'reports') {
       await reportRepository.deleteByReportId(found.report.report_id);

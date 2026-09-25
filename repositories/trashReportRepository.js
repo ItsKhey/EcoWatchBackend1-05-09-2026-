@@ -1,7 +1,7 @@
 const { pool } = require('../config/db');
 
-async function findByReportId(reportId) {
-  const result = await pool.query(
+async function findByReportId(reportId, queryable = pool) {
+  const result = await queryable.query(
     `
     SELECT *
     FROM trash_reports
@@ -14,8 +14,23 @@ async function findByReportId(reportId) {
   return result.rows[0] || null;
 }
 
-async function findByResidentId(residentId) {
-  const result = await pool.query(
+async function findByReportIdForUpdate(reportId, queryable = pool) {
+  const result = await queryable.query(
+    `
+    SELECT *
+    FROM trash_reports
+    WHERE report_id = $1
+    LIMIT 1
+    FOR UPDATE
+    `,
+    [reportId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function findByResidentId(residentId, queryable = pool) {
+  const result = await queryable.query(
     `
     SELECT
       tr.id,
@@ -56,12 +71,15 @@ async function findByResidentId(residentId) {
   return result.rows;
 }
 
-async function createTrashRecord({
-  reportId,
-  residentId,
-  deletedAt = null,
-}) {
-  const result = await pool.query(
+async function createTrashRecord(
+  {
+    reportId,
+    residentId,
+    deletedAt = null,
+  },
+  queryable = pool
+) {
+  const result = await queryable.query(
     `
     INSERT INTO trash_reports (
       report_id,
@@ -83,8 +101,8 @@ async function createTrashRecord({
   return result.rows[0];
 }
 
-async function deleteByReportId(reportId) {
-  const result = await pool.query(
+async function deleteByReportId(reportId, queryable = pool) {
+  const result = await queryable.query(
     `
     DELETE FROM trash_reports
     WHERE report_id = $1
@@ -96,8 +114,8 @@ async function deleteByReportId(reportId) {
   return result.rows[0] || null;
 }
 
-async function deleteExpired(expirationDate) {
-  const result = await pool.query(
+async function deleteExpired(expirationDate, queryable = pool) {
+  const result = await queryable.query(
     `
     DELETE FROM trash_reports
     WHERE deleted_at < $1
@@ -111,6 +129,7 @@ async function deleteExpired(expirationDate) {
 
 module.exports = {
   findByReportId,
+  findByReportIdForUpdate,
   findByResidentId,
   createTrashRecord,
   deleteByReportId,

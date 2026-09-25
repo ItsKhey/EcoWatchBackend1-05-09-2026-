@@ -11,6 +11,7 @@ const { logger } = require('./utils/logger');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { startHistoryCleanupJob } = require('./services/historyCleanupService');
 const { startReportCleanupJob } = require('./services/reportCleanupService');
+const { isFirebaseConfigured } = require('./services/fcmService');
 
 dotenv.config();
 
@@ -35,6 +36,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'UP',
     database: 'CONNECTED',
+    pushNotifications: isFirebaseConfigured() ? 'CONFIGURED' : 'NOT_CONFIGURED',
     timestamp: new Date().toISOString()
   });
 });

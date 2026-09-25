@@ -236,6 +236,20 @@ async function findByResidentId(residentId) {
   return result.rows[0] || null;
 }
 
+async function findFcmTokenByResidentId(residentId) {
+  const result = await pool.query(
+    `
+    SELECT fcm_token
+    FROM residents
+    WHERE resident_id = $1
+      AND lower(trim(COALESCE(role, 'RESIDENT'))) = 'resident'
+    LIMIT 1
+    `,
+    [residentId]
+  );
+  return result.rows[0]?.fcm_token || null;
+}
+
 async function findByUsername(username) {
   const result = await pool.query(
     `
@@ -415,6 +429,68 @@ async function updateResident(residentId, updates) {
   return result.rows[0] || null;
 }
 
+/**
+ * Claims a device token for exactly one resident. A token can move between
+ * accounts after logout/login, so any previous owner is cleared before the
+ * authenticated resident is updated. The advisory lock prevents two rapid
+ * account switches from claiming the same token in different transactions.
+ */
+async function claimFcmToken(residentId, token) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext('myecowatch:phase-2c:fcm-token:v1'))"
+    );
+    await client.query(
+      `
+      UPDATE residents
+      SET fcm_token = NULL
+      WHERE fcm_token = $1
+        AND resident_id <> $2
+      `,
+      [token, residentId]
+    );
+    const result = await client.query(
+      `
+      UPDATE residents
+      SET fcm_token = $2
+      WHERE resident_id = $1
+        AND lower(trim(COALESCE(role, 'RESIDENT'))) = 'resident'
+      RETURNING resident_id
+      `,
+      [residentId, token]
+    );
+    await client.query('COMMIT');
+    return result.rowCount === 1;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error(`[FCM_TOKEN] Rollback failed: ${rollbackError.message}`);
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function clearFcmToken(residentId, expectedToken = null) {
+  const values = expectedToken ? [residentId, expectedToken] : [residentId];
+  const predicate = expectedToken ? 'AND fcm_token = $2' : '';
+  const result = await pool.query(
+    `
+    UPDATE residents
+    SET fcm_token = NULL
+    WHERE resident_id = $1
+      ${predicate}
+    RETURNING resident_id
+    `,
+    values
+  );
+  return result.rowCount > 0;
+}
+
 async function updatePassword(residentId, passwordHash) {
   const result = await pool.query(
     `
@@ -437,11 +513,14 @@ module.exports = {
   touchLastActive,
   findByIdentifier,
   findByResidentId,
+  findFcmTokenByResidentId,
   findByUsername,
   findByEmail,
   findLegacyPersonnelByIds,
   findByRole,
   createResident,
   updateResident,
+  claimFcmToken,
+  clearFcmToken,
   updatePassword,
 };

@@ -24,6 +24,8 @@ async function createTrashNotification(notificationId, residentId) {
       deleted_at
     )
     VALUES ($1, $2, NOW())
+    ON CONFLICT (resident_id, notification_id) DO UPDATE
+      SET deleted_at = trash_notifications.deleted_at
     RETURNING *
     `,
     [notificationId, residentId]

@@ -3,7 +3,7 @@ const reportRepository = require('../repositories/reportRepository');
 const personnelRepository = require('../repositories/personnelRepository');
 const residentRepository = require('../repositories/residentRepository');
 const historyRepository = require('../repositories/historyRepository');
-const notificationRepository = require('../repositories/notificationRepository');
+const notificationService = require('./notificationService');
 const {
   PERSONNEL_ID_PATTERN,
   createHttpError,
@@ -384,32 +384,31 @@ const writeAssignmentHistory = async ({
   );
 };
 
-const notifyPersonnelSafely = async ({
-  personnelIds: recipients,
+const notifyResidentEventsSafely = async ({
   report,
-  action,
+  events,
+  requestId = null,
 }) => {
-  for (const recipient of uniqueUpper(recipients)) {
+  const notifications = [];
+  for (const type of events) {
     try {
-      await notificationRepository.createNotification({
-        residentId: recipient,
+      notifications.push(await notificationService.createForReportEvent({
         reportId: report.report_id,
-        title: action === 'unassigned' ? 'Assignment Removed' : 'New Task Assigned',
-        message: action === 'unassigned'
-          ? `Your assignment for report ${report.report_id} was removed.`
-          : `You have been assigned to report: ${report.title}`,
-      });
+        type,
+        report,
+        requestId,
+      }));
     } catch (error) {
-      // Notifications are ancillary. The assignment transaction has already
-      // committed, so a notification outage must not turn it into a false
-      // assignment failure.
+      // The report mutation has already committed. Keep that success durable
+      // even if notification persistence is temporarily unavailable.
       logError(
-        null,
-        'ASSIGNMENT_NOTIFICATION',
-        `Unable to notify ${recipient} about report ${report.report_id}: ${error.message}`
+        requestId,
+        'RESIDENT_NOTIFICATION',
+        `Unable to create ${type} notification for report ${report.report_id}: ${error.message}`
       );
     }
   }
+  return notifications;
 };
 
 const mutateAssignment = async ({
@@ -422,6 +421,7 @@ const mutateAssignment = async ({
   adminResponse,
   priority,
   adminId: rawAdminId,
+  requestId = null,
   mode = 'assign',
 }) => {
   const reportId = normalizeReportId(rawReportId || legacyReport?.report_id);
@@ -529,6 +529,10 @@ const mutateAssignment = async ({
     const nextPriority = priority || report.priority || 'Normal';
     const nextArray = requestedIds;
     const nextHandledById = effectiveCanonicalId || handledById || null;
+    const nextAdminResponse = adminResponse === undefined
+      ? report.admin_response || ''
+      : String(adminResponse || '').trim();
+    const responseChanged = nextAdminResponse !== (report.admin_response || '');
 
     const updatedReport = await reportRepository.updateReport(
       report.report_id,
@@ -537,8 +541,7 @@ const mutateAssignment = async ({
         assignedPersonnelId: nextCanonicalId,
         assignedByAdminId: adminId,
         assignedAt,
-        adminResponse:
-          adminResponse === undefined ? report.admin_response || '' : adminResponse,
+        adminResponse: nextAdminResponse,
         status: nextStatus,
         priority: nextPriority,
         handledById: nextHandledById,
@@ -585,19 +588,23 @@ const mutateAssignment = async ({
       report: updatedReport,
       assignment,
       oldPersonnelIds: locked.oldPersonnelIds,
-      notificationPersonnelIds: uniqueUpper([
-        ...nextPersonnelIds,
-        ...requestedIds,
-      ]),
+      events: [
+        notificationService.NOTIFICATION_TYPES.PERSONNEL_ASSIGNED,
+        ...(responseChanged
+          ? [notificationService.NOTIFICATION_TYPES.ADMIN_RESPONSE_UPDATED]
+          : []),
+      ],
+      responseChanged,
       mode,
+      requestId,
     };
   }).then(async (result) => {
-    await notifyPersonnelSafely({
-      personnelIds: result.notificationPersonnelIds,
+    const notifications = await notifyResidentEventsSafely({
       report: result.report,
-      action: result.mode === 'reassign' ? 'reassigned' : 'assigned',
+      events: result.events,
+      requestId: result.requestId,
     });
-    return result;
+    return { ...result, notifications };
   });
 };
 
@@ -610,6 +617,7 @@ const reassignPersonnelToReport = (options) =>
 const unassignPersonnelFromReport = async ({
   reportId: rawReportId,
   adminId: rawAdminId,
+  requestId = null,
 }) => {
   const reportId = normalizeReportId(rawReportId);
   const adminId = requireAdminId(rawAdminId);
@@ -629,7 +637,7 @@ const unassignPersonnelFromReport = async ({
       return {
         report,
         clearedPersonnelIds: [],
-        notificationPersonnelIds: [],
+        events: [],
         assignment: buildAssignmentDetails(report),
       };
     }
@@ -688,23 +696,71 @@ const unassignPersonnelFromReport = async ({
     return {
       report: updatedReport,
       clearedPersonnelIds,
-      notificationPersonnelIds: uniqueUpper([
-        ...locked.oldPersonnelIds,
-        ...existingIds,
-      ]),
+      events: [notificationService.NOTIFICATION_TYPES.PERSONNEL_UNASSIGNED],
     };
   });
 
-  await notifyPersonnelSafely({
-    personnelIds: result.notificationPersonnelIds,
+  const notifications = await notifyResidentEventsSafely({
     report: result.report,
-    action: 'unassigned',
+    events: result.events,
+    requestId,
   });
 
   return {
     ...result,
+    notifications,
     assignment: buildAssignmentDetails(result.report),
   };
+};
+
+/**
+ * Releases the active personnel relationship without changing the report
+ * lifecycle collection. Resident-owned archive/trash operations use this
+ * helper before moving a report so a personnel account cannot remain busy on a
+ * report that is no longer actionable. Administrator lifecycle operations use
+ * the same invariant in their transaction.
+ */
+const releaseReportAssignment = async ({
+  reportId: rawReportId,
+  updatedByAdminId = null,
+}) => {
+  const reportId = normalizeReportId(rawReportId);
+
+  return withTransaction(async (client) => {
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext('myecowatch:phase-2b:assignment-command:v1'))"
+    );
+    const report = await reportRepository.findByReportIdForUpdate(reportId, client);
+    if (!report) return null;
+
+    const ids = reportAssignmentIds(report);
+    const locked = await lockAssignmentRows({
+      report,
+      requestedIds: [],
+      handledById: null,
+      client,
+    });
+    const oldStatus = report.status;
+    const updatedReport = await reportRepository.updateReport(
+      reportId,
+      {
+        assignedPersonnelIds: [],
+        assignedPersonnelId: null,
+        handledById: null,
+        status: reportStatus(report) === 'in progress' ? 'Pending' : oldStatus,
+      },
+      client
+    );
+
+    await personnelRepository.clearCurrentAssignmentsForReport(
+      reportId,
+      updatedByAdminId,
+      client,
+      { personnelIds: locked.oldPersonnelIds }
+    );
+
+    return updatedReport;
+  });
 };
 
 const getReportAssignment = async ({ reportId: rawReportId }) => {
@@ -733,11 +789,13 @@ const completePersonnelReport = async ({
   reportId: rawReportId,
   report: legacyReport = null,
   updatedByAdminId: rawAdminId,
+  adminResponse,
+  requestId = null,
 }) => {
   const reportId = normalizeReportId(rawReportId || legacyReport?.report_id);
   const adminId = requireAdminId(rawAdminId);
 
-  return withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
     await client.query(
       "SELECT pg_advisory_xact_lock(hashtext('myecowatch:phase-2b:assignment-command:v1'))"
     );
@@ -751,6 +809,13 @@ const completePersonnelReport = async ({
     assertActiveReport(report);
 
     const ids = reportAssignmentIds(report);
+    if (!ids.length) {
+      throw createHttpError(409, 'Assign personnel before completing a report.');
+    }
+    if (reportStatus(report) !== 'in progress') {
+      throw createHttpError(409, 'Only an In Progress report can be completed.');
+    }
+
     const locked = await lockAssignmentRows({
       report,
       requestedIds: [],
@@ -758,12 +823,25 @@ const completePersonnelReport = async ({
       client,
     });
     const oldStatus = report.status;
+    const nextResponse = adminResponse === undefined
+      ? report.admin_response || ''
+      : String(adminResponse || '').trim();
+    const responseChanged = nextResponse !== (report.admin_response || '');
+    const updates = {
+      status: 'Completed',
+      resolvedAt: new Date(),
+      // Completion releases the active assignment. Keeping the canonical
+      // pointer (or its legacy array fallback) populated would make the
+      // personnel appear busy and trip the active-assignment unique index.
+      assignedPersonnelId: null,
+      assignedPersonnelIds: [],
+      handledById: null,
+    };
+    if (adminResponse !== undefined) updates.adminResponse = nextResponse;
+
     const updatedReport = await reportRepository.updateReport(
       report.report_id,
-      {
-        status: 'Completed',
-        resolvedAt: new Date(),
-      },
+      updates,
       client
     );
 
@@ -788,13 +866,40 @@ const completePersonnelReport = async ({
       newStatus: 'Completed',
       description: `Admin approved cleanup for report '${report.title}'.`,
     });
+    if (responseChanged) {
+      await historyRepository.createHistory(
+        {
+          residentId: report.resident_id,
+          reportId: report.report_id,
+          action: 'ADMIN_RESPONSE_UPDATED',
+          oldStatus,
+          newStatus: 'Completed',
+          description: 'Admin updated the resident-visible report response while completing the report.',
+        },
+        client
+      );
+    }
 
     return {
       report: updatedReport,
       clearedPersonnelIds,
       previousAssignmentIds: ids,
+      responseChanged,
+      events: [
+        notificationService.NOTIFICATION_TYPES.REPORT_COMPLETED,
+        ...(responseChanged
+          ? [notificationService.NOTIFICATION_TYPES.ADMIN_RESPONSE_UPDATED]
+          : []),
+      ],
     };
   });
+
+  const notifications = await notifyResidentEventsSafely({
+    report: result.report,
+    events: result.events,
+    requestId,
+  });
+  return { ...result, notifications };
 };
 
 module.exports = {
@@ -802,6 +907,7 @@ module.exports = {
   reassignPersonnelToReport,
   unassignPersonnelFromReport,
   unassignPersonnel: unassignPersonnelFromReport,
+  releaseReportAssignment,
   getReportAssignment,
   getAssignment: getReportAssignment,
   completePersonnelReport,

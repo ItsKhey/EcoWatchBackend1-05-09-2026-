@@ -3,11 +3,17 @@ const bcrypt = require('bcryptjs');
 const reportRepository =
   require('../repositories/reportRepository');
 
-const notificationRepository =
-  require('../repositories/notificationRepository');
-
 const personnelController =
   require('./personnelController');
+
+const {
+  archiveReport,
+  trashReport,
+  restoreReport,
+  deleteReport: permanentlyDeleteReport,
+  bulkLifecycle,
+  normalizeReport: normalizeAdminLifecycleReport,
+} = require('../services/adminReportLifecycleService');
 
 const {
   assignPersonnelToReport,
@@ -17,6 +23,11 @@ const {
   completePersonnelReport,
   mapAssignmentReport,
 } = require('../services/reportAssignmentService');
+
+const {
+  updateReportAdminStatus,
+  updateReportAdminResponse,
+} = require('../services/reportStatusService');
 
 const {
   findByIdentifier,
@@ -31,7 +42,10 @@ const {
   normalizeReportId,
   validateReportAssignmentPayload,
 } = require('../utils/reportAssignmentValidation');
-const { logError } = require('../utils/logger');
+const {
+  validateStatusPayload,
+  validateResponsePayload,
+} = require('../utils/reportStatusValidation');
 
 const generateToken = require('../utils/generateToken');
 
@@ -168,15 +182,125 @@ const getCurrentAdmin = async (req, res, next) => {
 // @access  Private/Admin
 const getAllReports = async (req, res, next) => {
   try {
-    const reports = await reportRepository.findAll();
+    requireAdminActor(req);
+    const view = req.query.view ? String(req.query.view).trim().toLowerCase() : 'all';
+    const allowedViews = new Set(['all', 'active', 'inbox', 'archive', 'archived', 'trash', 'trashed']);
+    if (!allowedViews.has(view)) {
+      throw createHttpError(400, 'Invalid report view. Use all, active, archive, or trash.');
+    }
 
+    const search = req.query.search ? String(req.query.search).trim() : null;
+    if (search && (search.length > 100 || /[\u0000-\u001f\u007f]/.test(search))) {
+      throw createHttpError(400, 'Search must be at most 100 characters and contain no control characters.');
+    }
+    const reports = typeof reportRepository.findAllForAdmin === 'function'
+      ? await reportRepository.findAllForAdmin({ view, search })
+      : await reportRepository.findAll();
+
+    res.set('Cache-Control', 'no-store');
     // Keep the historical raw array contract while adding canonical
-    // assignment aliases used by the Phase 2B client.
-    res.json(reports.map((report) => mapAssignmentReport(report)));
+    // assignment aliases and lifecycle metadata used by the admin client.
+    res.json(reports.map((report) => ({
+      ...mapAssignmentReport(report),
+      isDeleted: report.is_deleted === true,
+      isArchived: report.is_archived === true || report.source_collection === 'archived_reports',
+      isRestored: report.is_restored === true,
+      sourceCollection: report.source_collection,
+    })));
   } catch (error) {
     next(error);
   }
 };
+
+const lifecycleResponse = (result) => {
+  const report = normalizeAdminLifecycleReport(result.report, result.source);
+  return {
+    success: true,
+    report: {
+      ...report,
+      ...mapAssignmentReport(result.report),
+    },
+  };
+};
+
+const archiveAdminReport = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const result = await archiveReport({
+      rawReportId: normalizeReportId(req.params.id),
+      adminId,
+    });
+    res.json(lifecycleResponse(result));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const trashAdminReport = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const result = await trashReport({
+      rawReportId: normalizeReportId(req.params.id),
+      adminId,
+    });
+    res.json(lifecycleResponse(result));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const restoreAdminReport = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const result = await restoreReport({
+      rawReportId: normalizeReportId(req.params.id),
+      adminId,
+    });
+    res.json(lifecycleResponse(result));
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteAdminReport = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const result = await permanentlyDeleteReport({
+      rawReportId: normalizeReportId(req.params.id),
+      adminId,
+    });
+    res.json({
+      success: true,
+      message: 'Report permanently removed.',
+      report: lifecycleResponse(result).report,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const bulkAdminLifecycle = (action) => async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const result = await bulkLifecycle({
+      ids: Array.isArray(req.body) ? req.body : req.body?.ids,
+      action,
+      adminId,
+    });
+    res.json({
+      success: true,
+      ...result,
+      results: (result.results || []).map((entry) => lifecycleResponse(entry).report),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const bulkArchiveAdminReports = bulkAdminLifecycle('archive');
+const bulkTrashAdminReports = bulkAdminLifecycle('trash');
+const bulkRestoreAdminReports = bulkAdminLifecycle('restore');
+const bulkDeleteAdminReports = bulkAdminLifecycle('delete');
 
 // @desc    Assign one active personnel account to a report
 // @route   POST /api/admin/reports/:id/assign
@@ -194,6 +318,7 @@ const assignPersonnel = async (req, res, next) => {
       adminResponse: payload.adminResponse,
       priority: payload.priority,
       adminId,
+      requestId: req.requestId,
     });
 
     res.json(assignmentResponse(result));
@@ -218,6 +343,7 @@ const reassignPersonnel = async (req, res, next) => {
       adminResponse: payload.adminResponse,
       priority: payload.priority,
       adminId,
+      requestId: req.requestId,
     });
 
     res.json(assignmentResponse(result));
@@ -251,6 +377,7 @@ const unassignPersonnel = async (req, res, next) => {
     const result = await unassignPersonnelFromReport({
       reportId: normalizeReportId(req.params.id),
       adminId,
+      requestId: req.requestId,
     });
 
     res.json(assignmentResponse(result));
@@ -267,6 +394,51 @@ const deleteReportAssignment = unassignPersonnel;
 const getPersonnel = personnelController.listPersonnelLegacy;
 const createPersonnel = personnelController.createPersonnel;
 
+const updateReportStatus = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const payload = validateStatusPayload(req.body);
+    const result = await updateReportAdminStatus({
+      reportId: normalizeReportId(req.params.id),
+      status: payload.status,
+      adminResponse: payload.adminResponse,
+      adminId,
+      requestId: req.requestId,
+    });
+    res.json({
+      success: true,
+      message: 'Report status updated.',
+      report: mapAssignmentReport(result.report),
+      notificationsCreated: result.notifications.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateReportResponse = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const payload = validateResponsePayload(req.body);
+    const result = await updateReportAdminResponse({
+      reportId: normalizeReportId(req.params.id),
+      adminResponse: payload.adminResponse,
+      adminId,
+      requestId: req.requestId,
+    });
+    res.json({
+      success: true,
+      message: result.responseChanged
+        ? 'Admin response updated.'
+        : 'Admin response is already current.',
+      report: mapAssignmentReport(result.report),
+      notificationsCreated: result.notifications.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Approve a report completion
 // @route   POST /api/admin/reports/:id/approve
 // @access  Private/Admin
@@ -280,26 +452,8 @@ const approveReportCompletion = async (
     const result = await completePersonnelReport({
       reportId: normalizeReportId(req.params.id),
       updatedByAdminId: adminId,
+      requestId: req.requestId,
     });
-
-    // Completion is already committed with its history audit. Notification
-    // delivery is ancillary and must not turn a successful approval into a
-    // false failure.
-    try {
-      await notificationRepository.createNotification({
-        residentId: result.report.resident_id,
-        reportId: result.report.report_id,
-        title: 'Report Completed',
-        message:
-          `Your waste report has been completed. ID: ${result.report.report_id}`,
-      });
-    } catch (notificationError) {
-      logError(
-        req.requestId,
-        'COMPLETION_NOTIFICATION',
-        `Unable to notify resident ${result.report.resident_id}: ${notificationError.message}`
-      );
-    }
 
     res.json({
       success: true,
@@ -315,6 +469,14 @@ module.exports = {
   loginAdmin,
   getCurrentAdmin,
   getAllReports,
+  archiveAdminReport,
+  trashAdminReport,
+  restoreAdminReport,
+  deleteAdminReport,
+  bulkArchiveAdminReports,
+  bulkTrashAdminReports,
+  bulkRestoreAdminReports,
+  bulkDeleteAdminReports,
   assignPersonnel,
   reassignPersonnel,
   getAssignment,
@@ -323,5 +485,7 @@ module.exports = {
   deleteReportAssignment,
   getPersonnel,
   createPersonnel,
+  updateReportStatus,
+  updateReportResponse,
   approveReportCompletion,
 };

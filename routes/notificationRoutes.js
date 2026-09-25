@@ -1,18 +1,37 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, protectResident } = require('../middleware/authMiddleware');
+const { admin } = require('../middleware/adminMiddleware');
 const {
   getMyNotifications,
+  getMyTrash,
+  getUnreadCount,
+  markAsRead,
+  markAllAsRead,
+  updateFcmToken,
+  clearFcmToken,
+  createReportEvent,
   moveToTrash,
   restoreNotification,
   deleteNotification,
-  markAllAsRead
 } = require('../controllers/notificationController');
 
-router.get('/my-notifications', protect, getMyNotifications);
-router.post('/:id/move-to-trash', protect, moveToTrash);
-router.post('/:id/restore', protect, restoreNotification);
-router.delete('/:id', protect, deleteNotification);
-router.patch('/mark-as-read', protect, markAllAsRead);
+const residentOnly = [protect, protectResident];
+
+router.get('/my-notifications', ...residentOnly, getMyNotifications);
+router.get('/trash', ...residentOnly, getMyTrash);
+router.get('/unread-count', ...residentOnly, getUnreadCount);
+router.patch('/mark-as-read', ...residentOnly, markAllAsRead);
+router.put('/fcm-token', ...residentOnly, updateFcmToken);
+router.delete('/fcm-token', ...residentOnly, clearFcmToken);
+
+// Server-owned creation is exposed only to authenticated administrators. The
+// request supplies a report event, never recipient or notification content.
+router.post('/events', protect, admin, createReportEvent);
+
+router.patch('/:id/read', ...residentOnly, markAsRead);
+router.post('/:id/move-to-trash', ...residentOnly, moveToTrash);
+router.post('/:id/restore', ...residentOnly, restoreNotification);
+router.delete('/:id', ...residentOnly, deleteNotification);
 
 module.exports = router;

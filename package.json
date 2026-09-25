@@ -13,8 +13,12 @@
     "migrate:admin-identifiers": "node scripts/migrateAdminIdentifiers.js",
     "check:syntax": "node scripts/check-syntax.js",
     "verify:assignment-contract": "node scripts/verify-report-assignment-contract.js",
+    "verify:schema": "node scripts/verify-schema.js",
     "verify:personnel": "node scripts/verify-personnel-registration.js",
-    "test": "npm run check:syntax && npm run verify:assignment-contract"
+    "test": "npm run check:syntax && npm run verify:assignment-contract && npm run test:unit",
+    "migrate:resident-notifications": "node migration/migrate-resident-notifications.js",
+    "test:unit": "node --test tests/*.test.js",
+    "verify:phase-2c": "node scripts/verify-phase-2c.js"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +30,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "firebase-admin": "^13.10.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.5",
     "morgan": "^1.12.0",

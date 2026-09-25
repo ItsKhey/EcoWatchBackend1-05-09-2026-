@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { pool } = require('../config/db');
+const { pool, withTransaction } = require('../config/db');
 
 const startHistoryCleanupJob = () => {
     // Run every day at midnight
@@ -27,17 +27,32 @@ const startHistoryCleanupJob = () => {
             );
 
             // 2. Permanently delete notifications from trash
-            const deletedNotifs = await pool.query(
-                `
-                DELETE FROM trash_notifications
-                WHERE deleted_at <= $1
-                RETURNING id
-                `,
-                [thirtyDaysAgo]
-            );
+            const deletedNotifCount = await withTransaction(async (client) => {
+                const expired = await client.query(
+                    `
+                    DELETE FROM trash_notifications
+                    WHERE deleted_at <= $1
+                    RETURNING notification_id, resident_id
+                    `,
+                    [thirtyDaysAgo]
+                );
+                if (expired.rowCount === 0) return 0;
+
+                // Delete the durable row in the same transaction. Deleting only
+                // the marker would make the original notification reappear.
+                await client.query(
+                    `
+                    DELETE FROM notifications AS n
+                    USING expired AS e
+                    WHERE n.notification_id = e.notification_id
+                      AND n.resident_id = e.resident_id
+                    `,
+                );
+                return expired.rowCount;
+            });
 
             console.log(
-                `[CLEANUP] Permanently deleted ${deletedNotifs.rowCount} notifications from trash.`
+                `[CLEANUP] Permanently deleted ${deletedNotifCount} notifications from trash.`
             );
 
         } catch (err) {
