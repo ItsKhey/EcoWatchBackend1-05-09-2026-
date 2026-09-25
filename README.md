@@ -10,6 +10,7 @@ The production-ready backend for the EcoWatch ecosystem.
 * Cloudinary Image Upload
 * Report Management
 * Admin-managed Personnel Accounts and Report Assignments
+* Backend-backed Resident Notification Center with Firebase Cloud Messaging
 * Supabase PostgreSQL database
 * Request Correlation Logging
 
@@ -26,6 +27,11 @@ The production-ready backend for the EcoWatch ecosystem.
    * `CLOUDINARY_CLOUD_NAME`
    * `CLOUDINARY_API_KEY`
    * `CLOUDINARY_API_SECRET`
+
+   For resident push delivery, also configure either
+   `FIREBASE_SERVICE_ACCOUNT_JSON` or the split `FIREBASE_PROJECT_ID`,
+   `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` variables. The service
+   account file/key must remain in Render environment settings only.
 
 3. For legacy MongoDB-to-PostgreSQL migration only, configure:
 
@@ -67,7 +73,42 @@ Run `npm run migrate:report-assignments` after the Phase 2A personnel migration 
 
 The migration also adds foreign keys, assignment indexes, synchronization checks/triggers, and an optional personnel `profile_image` URL for assignment avatars. It is safe to run repeatedly, but the API must not be deployed against a database that has not completed this migration. The migration command is intentionally not part of `npm test` and must be run explicitly against the target Supabase project.
 
-`npm test` performs a syntax check across all project JavaScript files and runs the assignment request-contract checks. After applying `003`, `005`, and `006` to an approved staging project, run the read-only `npm run verify:schema` command; it checks required columns, constraints, indexes, legacy administrator identifiers, assignment references, and duplicate active assignments without changing data. `npm run verify:personnel` performs a real Supabase-backed create/hash/login verification with a uniquely named temporary account and cleans that account up afterward.
+### Resident notifications and report timestamp repair (Phase 2C)
+
+Run the idempotent Phase 2C migration after the report-assignment migration and
+before deploying the new notification routes:
+
+```bash
+npm run migrate:resident-notifications
+npm run verify:phase-2c
+```
+
+The migration creates the canonical `notification_id` contract, adds
+`residents.fcm_token`, adds notification ownership/read/trash indexes and
+foreign keys, removes invalid legacy personnel rows from the resident
+notification table, and enables RLS. A generated `id` alias preserves rolling
+compatibility with the previous Render deployment while new code uses
+`notification_id`.
+
+The same migration repairs report submission time without adding a duplicate
+field. It backfills each legacy `reports.created_at` or
+`archived_reports.created_at` from that report's authoritative `SUBMITTED`
+history event, then enforces `DEFAULT NOW()` and `NOT NULL`. The migration
+fails visibly if a report has neither an existing timestamp nor a submitted
+history event; it never substitutes `updated_at` or the device clock.
+
+Notification content is always server-owned. Clients can read/move their own
+rows and update their own FCM token, but cannot supply a resident recipient,
+title, message, read state, or creation time. Admin assignment, response,
+Cleaning Started, Denied, and Completed mutations create their event
+content and report ID on the server.
+
+`npm test` performs a syntax check across all project JavaScript files and runs
+unit/assignment request-contract checks. After applying `003`, `005`, `006`, and
+`007` to an approved staging project, run the read-only `npm run verify:schema`
+and `npm run verify:phase-2c` commands. `npm run verify:personnel` performs a
+real Supabase-backed create/hash/login verification with a uniquely named
+temporary account and cleans that account up afterward.
 
 ## API Endpoints
 
@@ -176,8 +217,24 @@ The original `assignedPersonnelIds` array and `handledById` request shape remain
 
 The report row and all old/new personnel rows are locked in a deterministic order inside one transaction. Reassignment clears the old personnel state, and unassignment explicitly clears the report and personnel assignment fields. History is written transactionally; notification delivery is best-effort after commit and cannot turn a committed assignment into a false failure. Responses retain both snake_case database fields and camelCase aliases, plus the legacy assignment array. Report approval clears personnel assignment state in the same transaction and returns the account to `OFFLINE`.
 
+### Resident notifications (Phase 2C)
+
+* `GET /api/notifications/my-notifications` - Resident-owned active rows (Resident)
+* `GET /api/notifications/trash` - Resident-owned trash rows (Resident)
+* `GET /api/notifications/unread-count` - Current unread count (Resident)
+* `PATCH /api/notifications/:id/read` - Idempotently mark one owned row read (Resident)
+* `PATCH /api/notifications/mark-as-read` - Mark all active owned rows read (Resident)
+* `PUT /api/notifications/fcm-token` - Upsert the authenticated resident's device token (Resident)
+* `DELETE /api/notifications/fcm-token` - Remove the authenticated resident's device token (Resident)
+* `POST /api/notifications/events` - Admin-only server event creation; accepts only `reportId` and a supported event `type` (Admin)
+
+The event endpoint rejects recipient/content/read/creation fields. Normal
+clients do not need to call it: assignment, status, response, and completion
+routes invoke the same notification service after their database transaction
+commits. Push failure is logged and never rolls back the report mutation.
+
 ### Render deployment
 
-Render should run `npm install` and `npm start`; the service listens on `process.env.PORT`. Configure `SUPABASE_DATABASE_URL`, `JWT_SECRET`, and the existing email/Cloudinary variables in Render environment settings. Run `npm run migrate:admin-identifiers`, `npm run migrate:personnel`, `npm run migrate:report-assignments`, `npm run migrate:admin-account-activity`, and `npm run migrate:resident-account-activity` once against the target Supabase project before starting the new service version. Verify the resulting schema and constraints in an approved staging project before production deployment; do not run the real-account personnel verification script against production.
+Render should run `npm install` and `npm start`; the service listens on `process.env.PORT`. Configure `SUPABASE_DATABASE_URL`, `JWT_SECRET`, the existing email/Cloudinary variables, and Firebase service-account variables in Render environment settings. Run `npm run migrate:admin-identifiers`, `npm run migrate:personnel`, `npm run migrate:report-assignments`, `npm run migrate:admin-account-activity`, `npm run migrate:resident-account-activity`, and `npm run migrate:resident-notifications` once against the target Supabase project before starting the new service version. Verify the resulting schema and constraints in an approved staging project before production deployment; do not run the real-account personnel verification script against production.
 
 Before release, rotate any credential or Maps key that has ever appeared in a local environment file, shell history, source control, or application logs. Remove plaintext password copies/backups, restrict service-account keys to the deployed project, and verify the rotation in the provider dashboards. This repository intentionally does not reproduce or automate those owner-only rotations.
