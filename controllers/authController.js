@@ -9,6 +9,9 @@ const {
   updateResident,
   updatePassword: updateResidentPassword,
   touchLastActive: touchResidentLastActive,
+  pauseResidentAccount,
+  restorePausedResidentAccount,
+  deleteResidentAccount,
 } = require('../repositories/residentRepository');
 
 const {
@@ -41,7 +44,7 @@ const {
 } = require('../repositories/personnelRepository');
 
 const generateToken = require('../utils/generateToken');
-const { isEligibleResident } = require('../utils/residentAuth');
+const { getResidentLoginDecision } = require('../utils/residentAuth');
 const {
   generateResidentId,
   generateRegistrationId,
@@ -146,6 +149,25 @@ const mapLoginResponse = (user, isAdmin = false) => (
         phoneNumber: user.phone_number || '',
       }
 );
+
+/**
+ * Account lifecycle routes are resident-only. An administrator token must never
+ * be able to pause or permanently delete an account through these endpoints, so
+ * the role is re-checked here even though the route already mounted
+ * protectResident.
+ */
+const requireResidentAccount = (req) => {
+  const residentId = req.resident?.resident_id;
+  const role = String(req.resident?.role || '').trim().toUpperCase();
+
+  if (!residentId || role !== 'RESIDENT') {
+    const error = new Error('Not authorized as a resident.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  return residentId;
+};
 
 const registerResident = async (req, res, next) => {
   const {
@@ -682,14 +704,39 @@ const loginResident = async (req, res, next) => {
 
     const resident = await findResidentByIdentifier(identifier);
 
-    if (
-      resident &&
-      isEligibleResident(resident) &&
-      await bcrypt.compare(password, resident.password_hash)
-    ) {
-      let lastActive = resident.last_active || null;
+    /*
+     * The pause/restore rule lives in getResidentLoginDecision so it stays in
+     * one testable place and this controller remains a straight-line read of
+     * the login flow.
+     */
+    const passwordMatches = Boolean(
+      resident && await bcrypt.compare(password, resident.password_hash)
+    );
+    const decision = getResidentLoginDecision(resident, passwordMatches);
+
+    if (decision.allowed) {
+      let activeResident = resident;
+
+      if (decision.mustRestore) {
+        activeResident = await restorePausedResidentAccount(resident.resident_id);
+
+        if (!activeResident) {
+          res.status(403);
+          throw new Error(
+            'This account is disabled. Please contact your EcoWatch administrator.'
+          );
+        }
+
+        logInfo(
+          req.requestId,
+          'AUTH',
+          `Self-paused account restored on login: ${activeResident.resident_id}`
+        );
+      }
+
+      let lastActive = activeResident.last_active || null;
       try {
-        lastActive = await touchResidentLastActive(resident.resident_id) || lastActive;
+        lastActive = await touchResidentLastActive(activeResident.resident_id) || lastActive;
       } catch (activityError) {
         // Activity telemetry must not prevent a valid resident login.
         console.warn(`[AUTH] Unable to update resident activity: ${activityError.message}`);
@@ -697,20 +744,33 @@ const loginResident = async (req, res, next) => {
 
       res.json({
         success: true,
-        token: generateToken(resident.resident_id),
+        token: generateToken(activeResident.resident_id),
         resident: {
-          ...mapLoginResponse(resident, false),
-          lastActive: lastActive || resident.updated_at || resident.created_at || null,
+          ...mapLoginResponse(activeResident, false),
+          lastActive: lastActive || activeResident.updated_at || activeResident.created_at || null,
         },
       });
 
       logInfo(
         req.requestId,
         'AUTH',
-        `Login successful: ${resident.resident_id} (${resident.role})`
+        `Login successful: ${activeResident.resident_id} (${activeResident.role})`
       );
 
       return;
+    }
+
+    if (decision.reason === 'account_disabled') {
+      logInfo(
+        req.requestId,
+        'AUTH',
+        `Login blocked: account is disabled for ${identifier}`
+      );
+
+      res.status(403);
+      throw new Error(
+        'This account is disabled. Please contact your EcoWatch administrator.'
+      );
     }
 
     logInfo(
@@ -973,6 +1033,70 @@ const resetLoggedInPassword = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Pause the authenticated resident's own account
+ * @route   POST /api/auth/disable-account
+ * @access  Private/Resident
+ *
+ * This is a pause, not a deletion. The account, its reports, its history and
+ * its settings are all preserved, so the next successful login restores the
+ * same account. The client is expected to log out immediately afterwards.
+ */
+const disableOwnAccount = async (req, res, next) => {
+  try {
+    const residentId = requireResidentAccount(req);
+
+    const resident = await pauseResidentAccount(residentId);
+
+    if (!resident) {
+      res.status(404);
+      throw new Error('Account not found.');
+    }
+
+    logInfo(req.requestId, 'AUTH', `Resident account paused: ${residentId}`);
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      success: true,
+      message:
+        'Your account is disabled. Your profile, reports and history are preserved and return when you sign in again.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Permanently delete the authenticated resident's account
+ * @route   DELETE /api/auth/account
+ * @access  Private/Resident
+ *
+ * Irreversible. The account and every row it owns are removed server-side, so
+ * there is nothing left for the client to clean up locally.
+ */
+const deleteOwnAccount = async (req, res, next) => {
+  try {
+    const residentId = requireResidentAccount(req);
+
+    const deletedResidentId = await deleteResidentAccount(residentId);
+
+    if (!deletedResidentId) {
+      res.status(404);
+      throw new Error('Account not found.');
+    }
+
+    logInfo(req.requestId, 'AUTH', `Resident account permanently deleted: ${residentId}`);
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      success: true,
+      message: 'Your account and all of its data were deleted permanently.',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   registerResident,
   verifyOTP,
@@ -985,4 +1109,6 @@ module.exports = {
   updateProfileImage,
   changePassword,
   resetLoggedInPassword,
+  disableOwnAccount,
+  deleteOwnAccount,
 };

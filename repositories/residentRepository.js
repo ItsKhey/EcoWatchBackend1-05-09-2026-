@@ -506,6 +506,139 @@ async function updatePassword(residentId, passwordHash) {
   return result.rows[0] || null;
 }
 
+/**
+ * Pauses one resident account on that resident's own request. This is a pause,
+ * not a deletion: the account row, its reports, history and settings are all
+ * left untouched so the resident returns to the exact same account later. The
+ * device token is released because the account must not receive pushes while
+ * it is paused.
+ *
+ * `disabled_by_resident` is what keeps this reversible. Authentication already
+ * refuses every status in DISABLED_RESIDENT_STATUSES, and the login path only
+ * restores accounts carrying this marker, so an account disabled by an
+ * administrator can never be reactivated by its owner.
+ */
+async function pauseResidentAccount(residentId, queryable = pool) {
+  const result = await queryable.query(
+    `
+    UPDATE residents
+    SET status = 'DISABLED',
+        disabled_by_resident = true,
+        disabled_at = NOW(),
+        fcm_token = NULL,
+        updated_at = NOW()
+    WHERE resident_id = $1
+      AND lower(trim(COALESCE(role, 'RESIDENT'))) = 'resident'
+    RETURNING *
+    `,
+    [residentId]
+  );
+
+  return result.rows[0] || null;
+}
+
+/**
+ * Restores a self-paused resident account to its normal active status. The
+ * marker is the guard: an account disabled for any other reason matches no row
+ * and therefore stays disabled.
+ */
+async function restorePausedResidentAccount(residentId, queryable = pool) {
+  const result = await queryable.query(
+    `
+    UPDATE residents
+    SET status = 'AVAILABLE',
+        disabled_by_resident = false,
+        disabled_at = NULL,
+        updated_at = NOW()
+    WHERE resident_id = $1
+      AND disabled_by_resident = true
+      AND lower(trim(COALESCE(role, 'RESIDENT'))) = 'resident'
+    RETURNING *
+    `,
+    [residentId]
+  );
+
+  return result.rows[0] || null;
+}
+
+/**
+ * Permanently removes a resident account together with every row it owns.
+ *
+ * The deletes run in one transaction and in dependency order so no foreign key
+ * or unique constraint can leave a partial account behind. Trashed
+ * notifications go first because they reference the live notification, and the
+ * three report collections are all removed because a resident's own reports
+ * live independently in the active, archive and trash tables.
+ */
+async function deleteResidentAccount(residentId) {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+    // Serialize concurrent lifecycle requests for one deployment so two
+    // in-flight requests cannot both read the same account as deletable.
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext('myecowatch:phase-2d:resident-account-lifecycle:v1'))"
+    );
+
+    await client.query(
+      'DELETE FROM trash_notifications WHERE resident_id = $1',
+      [residentId]
+    );
+    await client.query(
+      'DELETE FROM notifications WHERE resident_id = $1',
+      [residentId]
+    );
+    await client.query(
+      'DELETE FROM report_histories WHERE resident_id = $1',
+      [residentId]
+    );
+    await client.query(
+      'DELETE FROM reports WHERE resident_id = $1',
+      [residentId]
+    );
+    await client.query(
+      'DELETE FROM archived_reports WHERE resident_id = $1',
+      [residentId]
+    );
+    await client.query(
+      'DELETE FROM trash_reports WHERE resident_id = $1',
+      [residentId]
+    );
+    await client.query(
+      'DELETE FROM password_reset_otps WHERE user_id = $1',
+      [residentId]
+    );
+
+    const deleted = await client.query(
+      `
+      DELETE FROM residents
+      WHERE resident_id = $1
+        AND lower(trim(COALESCE(role, 'RESIDENT'))) = 'resident'
+      RETURNING resident_id
+      `,
+      [residentId]
+    );
+
+    if (deleted.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    await client.query('COMMIT');
+    return deleted.rows[0].resident_id;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error(`[RESIDENT_DELETE] Rollback failed: ${rollbackError.message}`);
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   findPublicByResidentId,
   findAllForAdmin,
@@ -523,4 +656,7 @@ module.exports = {
   claimFcmToken,
   clearFcmToken,
   updatePassword,
+  pauseResidentAccount,
+  restorePausedResidentAccount,
+  deleteResidentAccount,
 };

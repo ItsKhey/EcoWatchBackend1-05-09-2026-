@@ -103,12 +103,41 @@ title, message, read state, or creation time. Admin assignment, response,
 Cleaning Started, Denied, and Completed mutations create their event
 content and report ID on the server.
 
+### Resident account lifecycle (Phase 2D)
+
+Run the idempotent Phase 2D migration after Phase 2C and before deploying the
+resident account lifecycle routes:
+
+```bash
+npm run migrate:resident-account-lifecycle
+```
+
+`residents.status` already blocks authentication for disabled accounts, so the
+pause itself adds no new lifecycle column. The migration adds only
+`residents.disabled_by_resident` and `residents.disabled_at`, which record that
+the *resident* paused the account. That marker is what makes the pause
+reversible without weakening administrator control: the next successful login
+restores only a self-paused account, and an account disabled by an
+administrator stays blocked.
+
+A pause preserves the entire account. Profile, reports (active, archive and
+trash), history and settings are all left untouched, so signing in again
+returns the resident to exactly the state they left. The device token is
+released while the account is paused because a paused account must not receive
+push notifications. The resident client logs out immediately afterwards.
+
+A permanent deletion is irreversible. The account and every row it owns are
+removed inside one transaction and in dependency order: trashed notifications,
+notifications, report histories, the active/archive/trash report collections,
+pending password resets, and finally the account itself.
+
 `npm test` performs a syntax check across all project JavaScript files and runs
-unit/assignment request-contract checks. After applying `003`, `005`, `006`, and
-`007` to an approved staging project, run the read-only `npm run verify:schema`
-and `npm run verify:phase-2c` commands. `npm run verify:personnel` performs a
-real Supabase-backed create/hash/login verification with a uniquely named
-temporary account and cleans that account up afterward.
+unit/assignment request-contract checks. After applying `003`, `005`, `006`,
+`007`, and `008` to an approved staging project, run the read-only
+`npm run verify:schema` and `npm run verify:phase-2c` commands.
+`npm run verify:personnel` performs a real Supabase-backed create/hash/login
+verification with a uniquely named temporary account and cleans that account up
+afterward.
 
 ## API Endpoints
 
@@ -119,6 +148,8 @@ temporary account and cleans that account up afterward.
 * `POST /api/auth/login` - Login with `username` and `password`
 * `GET /api/auth/me` - Get the current profile (Protected; admins also receive the canonical `admin` object)
 * `GET /api/admin/me` - Get the authenticated administrator account and server-owned activity timestamps (Protected, Admin)
+* `POST /api/auth/disable-account` - Pause the caller's own resident account (Protected, Resident). Preserves the profile, reports, history and settings; releases the device token. Logging in again restores the same account. Administrator-disabled accounts are not restored.
+* `DELETE /api/auth/account` - Permanently delete the caller's own resident account and all data it owns (Protected, Resident). Irreversible.
 
 ### Personnel Management
 

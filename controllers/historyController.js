@@ -88,15 +88,38 @@ const bulkDeleteHistory = async (req, res, next) => {
       });
     }
 
+    // Track which ids were actually removed. The delete is scoped to the
+    // authenticated resident, so an id belonging to another account (or one
+    // already gone) matches nothing. Previously every id was reported as
+    // success, which left clients believing a permanent delete had landed
+    // while the row survived and was re-served on the next sync.
+    const deleted = [];
+    const notFound = [];
+
     for (const id of ids) {
-      await historyRepository.deleteByIdForResident(
+      const removed = await historyRepository.deleteByIdForResident(
         id,
         residentId
+      );
+
+      if (removed) {
+        deleted.push(id);
+      } else {
+        notFound.push(id);
+      }
+    }
+
+    if (notFound.length > 0) {
+      console.warn(
+        `[history] bulk-delete: ${notFound.length}/${ids.length} id(s) not matched for resident ${residentId}`
       );
     }
 
     res.json({
-      message: 'History logs permanently deleted'
+      message: 'History logs permanently deleted',
+      requested: ids.length,
+      deleted: deleted.length,
+      notFound
     });
   } catch (error) {
     next(error);
