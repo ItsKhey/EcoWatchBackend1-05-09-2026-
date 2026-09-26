@@ -1,4 +1,5 @@
 const { pool } = require('../config/db');
+const { destroyImage } = require('../services/cloudinaryService');
 
 async function findAll(queryable = pool) {
   const result = await queryable.query(`
@@ -719,8 +720,98 @@ async function restoreReport(reportId) {
   return result.rows[0] || null;
 }
 
-async function deleteByReportId(reportId) {
-  const result = await pool.query(
+/**
+ * Removes the active report row without releasing its image.
+ *
+ * <p>Accepts the caller's connection so a lifecycle move can run inside its own
+ * transaction. The archive and restore moves lock this row with FOR UPDATE and
+ * then delete it, so issuing the DELETE on a separate pooled connection would
+ * block on the lock the transaction itself is holding until the statement
+ * timeout. Callers outside a transaction can omit `queryable` and get the pool.
+ *
+ * <p>Lifecycle moves re-create the row elsewhere still referencing the same
+ * asset, so this deliberately keeps the photo. A permanent delete wants the
+ * opposite and must use {@link permanentlyDeleteByReportId}.
+ */
+async function deleteByReportId(reportId, queryable = pool) {
+  const result = await queryable.query(
+    `
+    DELETE FROM reports
+    WHERE report_id = $1
+    RETURNING *
+    `,
+    [reportId]
+  );
+
+  return result.rows[0] || null;
+}
+
+/**
+ * Resolves the Cloudinary asset a report currently owns.
+ *
+ * <p>A report lives in exactly one of the two tables: archiving moves the row
+ * out of `reports` and re-inserts it into `archived_reports` carrying the same
+ * `image_url`, so the owner has to be resolved before any permanent delete or
+ * the archived branch would orphan the photo.
+ *
+ * <p>Trash is only a marker table and keeps the row in `reports`, so it needs no
+ * lookup of its own.
+ */
+async function findOwnedImageUrl(reportId, queryable = pool) {
+  const active = await queryable.query(
+    `
+    SELECT image_url
+    FROM reports
+    WHERE report_id = $1
+    `,
+    [reportId]
+  );
+  if (active.rows[0]) return active.rows[0].image_url || null;
+
+  const archived = await queryable.query(
+    `
+    SELECT image_url
+    FROM archived_reports
+    WHERE report_id = $1
+    `,
+    [reportId]
+  );
+  return archived.rows[0] ? archived.rows[0].image_url || null : null;
+}
+
+/**
+ * Releases the Cloudinary asset a report owns.
+ *
+ * <p>This is the single source of truth for report image cleanup: the resident
+ * delete, the bulk delete, the admin trash-bin delete, the archived-report
+ * delete, the expiration cleanup job and resident account deletion all funnel
+ * through here, so no path can orphan an asset in Cloudinary.
+ *
+ * <p>It runs before the row is removed so an interruption can only ever leave a
+ * report whose photo 404s, never a live Cloudinary file that nothing points at.
+ * `destroyImage` resolves even when the asset is already gone and never
+ * rejects, and it ignores any URL that is not a Cloudinary delivery URL, so the
+ * cleanup is idempotent and a Cloudinary outage can never strand the report row
+ * in PostgreSQL.
+ */
+async function releaseReportImage(reportId, queryable = pool) {
+  const imageUrl = await findOwnedImageUrl(reportId, queryable);
+  if (!imageUrl) return null;
+
+  return destroyImage(imageUrl);
+}
+
+/**
+ * Permanently removes the active report row and the asset it owns.
+ *
+ * <p>Lifecycle moves that delete the active row but immediately re-create it
+ * (archive, restore) must keep using {@link deleteByReportId}: the re-created
+ * row still references the same asset, so the photo must survive.
+ */
+async function permanentlyDeleteByReportId(reportId, queryable = pool) {
+  await releaseReportImage(reportId, queryable);
+
+  const result = await queryable.query(
     `
     DELETE FROM reports
     WHERE report_id = $1
@@ -748,4 +839,7 @@ module.exports = {
   softDelete,
   restoreReport,
   deleteByReportId,
+  findOwnedImageUrl,
+  releaseReportImage,
+  permanentlyDeleteByReportId,
 };

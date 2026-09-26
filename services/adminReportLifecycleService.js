@@ -376,12 +376,15 @@ const permanentlyDelete = async ({ state, reportId, adminId, client }) => {
     if (state.trash) {
       await trashReportRepository.deleteByReportId(reportId, client);
     }
+    // An archived row owns its own copy of the photo, so it has to be released
+    // through the shared cleanup before the copy itself is removed.
+    await reportRepository.releaseReportImage(reportId, client);
     await archivedReportRepository.deleteByReportId(reportId, client);
   } else {
     if (state.trash) {
       await trashReportRepository.deleteByReportId(reportId, client);
     }
-    await reportRepository.deleteByReportId(reportId, client);
+    await reportRepository.permanentlyDeleteByReportId(reportId, client);
   }
 
   return report;

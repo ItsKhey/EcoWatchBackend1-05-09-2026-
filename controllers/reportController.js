@@ -496,11 +496,12 @@ const bulkDeleteReports = async (req, res, next) => {
       await releaseAssignmentBeforeLifecycleMove(found);
 
       if (found.source === 'reports') {
-        await reportRepository.deleteByReportId(found.report.report_id);
+        await reportRepository.permanentlyDeleteByReportId(found.report.report_id);
       } else if (found.source === 'trash_reports') {
         await trashReportRepository.deleteByReportId(found.report.report_id);
-        await reportRepository.deleteByReportId(found.report.report_id);
+        await reportRepository.permanentlyDeleteByReportId(found.report.report_id);
       } else {
+        await reportRepository.releaseReportImage(found.report.report_id);
         await archivedReportRepository.deleteByReportId(found.report.report_id);
       }
 
@@ -757,11 +758,12 @@ const deleteReport = async (req, res, next) => {
     await releaseAssignmentBeforeLifecycleMove(found);
 
     if (found.source === 'reports') {
-      await reportRepository.deleteByReportId(found.report.report_id);
+      await reportRepository.permanentlyDeleteByReportId(found.report.report_id);
     } else if (found.source === 'trash_reports') {
       await trashReportRepository.deleteByReportId(found.report.report_id);
-      await reportRepository.deleteByReportId(found.report.report_id);
+      await reportRepository.permanentlyDeleteByReportId(found.report.report_id);
     } else {
+      await reportRepository.releaseReportImage(found.report.report_id);
       await archivedReportRepository.deleteByReportId(found.report.report_id);
     }
 

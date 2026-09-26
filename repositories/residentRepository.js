@@ -1,4 +1,5 @@
 const { pool } = require('../config/db');
+const reportRepository = require('./reportRepository');
 
 /*
  * Public resident projections intentionally omit password_hash.  Activity
@@ -593,6 +594,26 @@ async function deleteResidentAccount(residentId) {
       'DELETE FROM report_histories WHERE resident_id = $1',
       [residentId]
     );
+    // Account deletion permanently removes every report the resident owns, so
+    // it releases those Cloudinary assets through the same shared cleanup used
+    // by the report delete paths instead of orphaning every photo. Trash is
+    // only a marker table, so the ids collected here cover both the active and
+    // the archived copies.
+    const ownedReports = await client.query(
+      `
+      SELECT report_id
+      FROM reports
+      WHERE resident_id = $1
+      UNION
+      SELECT report_id
+      FROM archived_reports
+      WHERE resident_id = $1
+      `,
+      [residentId]
+    );
+    for (const owned of ownedReports.rows) {
+      await reportRepository.releaseReportImage(owned.report_id, client);
+    }
     await client.query(
       'DELETE FROM reports WHERE resident_id = $1',
       [residentId]

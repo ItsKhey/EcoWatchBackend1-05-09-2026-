@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const { withTransaction } = require('../config/db');
 const historyRepository = require('../repositories/historyRepository');
+const reportRepository = require('../repositories/reportRepository');
 
 const permanentlyDeleteExpiredReports = async () => {
   const expirationDate = new Date(
@@ -39,13 +40,13 @@ const permanentlyDeleteExpiredReports = async () => {
     // ON DELETE SET NULL behavior. Explicitly clear the marker rows in the
     // same transaction so an expired report cannot leave an orphaned trash
     // record or a busy personnel account behind.
-    await client.query(
-      `
-      DELETE FROM reports
-      WHERE report_id = ANY($1::varchar[])
-      `,
-      [reportIds]
-    );
+    //
+    // Each report goes through the shared permanent-delete helper so the
+    // expiration job releases the Cloudinary asset exactly like a manual
+    // delete does, instead of leaving the photo behind as an orphan.
+    for (const reportId of reportIds) {
+      await reportRepository.permanentlyDeleteByReportId(reportId, client);
+    }
     await client.query(
       `
       DELETE FROM trash_reports
