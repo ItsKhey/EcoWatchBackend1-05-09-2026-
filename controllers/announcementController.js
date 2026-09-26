@@ -20,6 +20,19 @@ const SUPPORTED_AUDIENCES = Object.freeze(['ALL_RESIDENTS', 'BARANGAY', 'SELECTE
 const PUBLISHABLE_AUDIENCES = Object.freeze(['ALL_RESIDENTS']);
 const SUPPORTED_PRIORITIES = Object.freeze(['NORMAL', 'IMPORTANT']);
 
+/**
+ * Lifetime windows the administrator may pick, in days.
+ *
+ * <p>An allowlist rather than a free-form number: the composer offers exactly
+ * these choices, so a hand-rolled request cannot ask for a window the UI never
+ * presented. 0 means the announcement does not expire on a timer.
+ */
+const SUPPORTED_EXPIRY_DAYS = Object.freeze([0, 1, 3, 7, 14, 30]);
+
+/** Applied when the request omits the field, so existing callers keep the
+ * original 7-day behaviour instead of publishing a permanent one by accident. */
+const DEFAULT_EXPIRY_DAYS = 7;
+
 /** Accepts the labels the admin UI sends, e.g. "All Residents". */
 const AUDIENCE_ALIASES = Object.freeze({
   allresidents: 'ALL_RESIDENTS',
@@ -34,6 +47,36 @@ const PRIORITY_ALIASES = Object.freeze({
   normal: 'NORMAL',
   important: 'IMPORTANT',
 });
+
+/**
+ * Resolves the administrator's chosen lifetime window.
+ *
+ * <p>Returns a day count, where 0 means "does not expire". An absent or null
+ * field falls back to {@link DEFAULT_EXPIRY_DAYS}. Anything outside the
+ * allowlist is refused rather than clamped, so a typo surfaces as an error
+ * instead of quietly publishing under a deadline nobody chose.
+ */
+const normalizeExpiryDays = (rawValue) => {
+  if (rawValue === undefined || rawValue === null || rawValue === '') {
+    return DEFAULT_EXPIRY_DAYS;
+  }
+
+  // Reject before Number.parseInt, which would accept "7days" as 7.
+  const normalized = typeof rawValue === 'string' ? rawValue.trim() : rawValue;
+  if (!/^\d+$/.test(String(normalized))) {
+    throw createHttpError(400, 'Expiry window must be a whole number of days.');
+  }
+
+  const days = Number(normalized);
+  if (!SUPPORTED_EXPIRY_DAYS.includes(days)) {
+    throw createHttpError(
+      400,
+      `Expiry window must be one of: ${SUPPORTED_EXPIRY_DAYS.join(', ')} days.`
+    );
+  }
+
+  return days;
+};
 
 const normalizeEnum = (rawValue, aliases, fieldName) => {
   const value = String(rawValue ?? '').trim();
@@ -89,7 +132,13 @@ const validateAnnouncementPayload = (body) => {
     throw createHttpError(400, 'A resident selection cannot be set for an All Residents announcement.');
   }
 
-  return { title, message, audience, priority };
+  return {
+    title,
+    message,
+    audience,
+    priority,
+    expiresInDays: normalizeExpiryDays(body.expiresInDays),
+  };
 };
 
 /**
@@ -114,6 +163,9 @@ const createAnnouncement = async (req, res, next) => {
       req.requestId,
       'ANNOUNCEMENT',
       `Announcement ${announcement.announcementId} published by admin ${adminId} (${announcement.priority})`
+      + (announcement.expiresAt
+        ? `, expires ${announcement.expiresAt}`
+        : ', no expiry')
     );
 
     res.status(201).json({ success: true, announcement });
@@ -196,7 +248,10 @@ module.exports = {
   listAnnouncements,
   getMyAnnouncements,
   validateAnnouncementPayload,
+  normalizeExpiryDays,
   SUPPORTED_AUDIENCES,
   PUBLISHABLE_AUDIENCES,
   SUPPORTED_PRIORITIES,
+  SUPPORTED_EXPIRY_DAYS,
+  DEFAULT_EXPIRY_DAYS,
 };

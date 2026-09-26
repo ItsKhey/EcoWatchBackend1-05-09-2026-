@@ -11,6 +11,7 @@ const { logger } = require('./utils/logger');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { startHistoryCleanupJob } = require('./services/historyCleanupService');
 const { startReportCleanupJob } = require('./services/reportCleanupService');
+const { startAnnouncementCleanupJob } = require('./services/announcementCleanupService');
 const { isFirebaseConfigured } = require('./services/fcmService');
 
 dotenv.config();
@@ -55,6 +56,7 @@ app.use(errorHandler);
 
 startHistoryCleanupJob();
 startReportCleanupJob();
+startAnnouncementCleanupJob();
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {

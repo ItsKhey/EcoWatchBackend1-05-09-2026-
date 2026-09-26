@@ -21,6 +21,7 @@
     "verify:phase-2c": "node scripts/verify-phase-2c.js",
     "migrate:admin-fcm-token": "node migration/migrate-admin-fcm-token.js",
     "migrate:announcements": "node migration/migrate-announcements.js",
+    "migrate:announcement-expiry": "node migration/migrate-announcement-expiry.js",
     "migrate:resident-account-lifecycle": "node migration/migrate-resident-account-lifecycle.js",
     "verify:phase-3a": "node scripts/verify-phase-3a.js"
   },

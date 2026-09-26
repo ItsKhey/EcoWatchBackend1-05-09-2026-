@@ -118,12 +118,23 @@ test('announcements are listed newest first', async () => {
     audience: 'All Residents',
   });
 
-  const listed = await announcementRepository.findAll({ limit: 2, offset: 0 });
-  assert.equal(listed[0].title, 'Second notice');
-  assert.equal(listed[1].title, 'First notice');
+  // Ordered by the relative position of the two rows this test created, not by
+  // their absolute place in the table. findAll returns every administrator's
+  // announcements and the test files share one database, so asserting on the
+  // first two slots would depend on which other suite happened to be inserting
+  // at the same moment. Relative order is what "newest first" actually means.
+  const listed = await announcementRepository.findAll({ limit: 100, offset: 0 });
+  const titles = listed.map((entry) => entry.title);
+
+  const firstIndex = titles.indexOf('First notice');
+  const secondIndex = titles.indexOf('Second notice');
+  assert.ok(firstIndex !== -1, 'the first notice is listed');
+  assert.ok(secondIndex !== -1, 'the second notice is listed');
+  assert.ok(secondIndex < firstIndex, 'the newer notice is listed above the older one');
 
   const timestamps = listed.map((entry) => new Date(entry.createdAt).getTime());
-  assert.ok(timestamps[0] >= timestamps[1], 'newest first');
+  const ordered = [...timestamps].sort((a, b) => b - a);
+  assert.deepEqual(timestamps, ordered, 'the whole page is newest first');
 
   assert.equal(first.res.statusCode, 201);
   assert.equal(second.res.statusCode, 201);
