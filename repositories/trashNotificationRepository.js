@@ -1,10 +1,17 @@
 const { pool } = require('../config/db');
+const { tablesFor } = require('../utils/notificationTables');
+
+/**
+ * Trash store for the account that owns the rows. Mirrors
+ * trashNotificationRepository and resolves its table from the owner ID so the
+ * resident and administrator trash collections stay independent.
+ */
 
 async function findByNotificationId(notificationId, residentId) {
   const result = await pool.query(
     `
     SELECT *
-    FROM trash_notifications
+    FROM ${tablesFor(residentId).trash}
     WHERE notification_id = $1
       AND resident_id = $2
     LIMIT 1
@@ -16,16 +23,17 @@ async function findByNotificationId(notificationId, residentId) {
 }
 
 async function createTrashNotification(notificationId, residentId) {
+  const table = tablesFor(residentId).trash;
   const result = await pool.query(
     `
-    INSERT INTO trash_notifications (
+    INSERT INTO ${table} (
       notification_id,
       resident_id,
       deleted_at
     )
     VALUES ($1, $2, NOW())
     ON CONFLICT (resident_id, notification_id) DO UPDATE
-      SET deleted_at = trash_notifications.deleted_at
+      SET deleted_at = ${table}.deleted_at
     RETURNING *
     `,
     [notificationId, residentId]
@@ -37,7 +45,7 @@ async function createTrashNotification(notificationId, residentId) {
 async function deleteByNotificationId(notificationId, residentId) {
   const result = await pool.query(
     `
-    DELETE FROM trash_notifications
+    DELETE FROM ${tablesFor(residentId).trash}
     WHERE notification_id = $1
       AND resident_id = $2
     RETURNING *
@@ -52,7 +60,7 @@ async function findAllByResidentId(residentId) {
   const result = await pool.query(
     `
     SELECT *
-    FROM trash_notifications
+    FROM ${tablesFor(residentId).trash}
     WHERE resident_id = $1
     ORDER BY created_at DESC
     `,

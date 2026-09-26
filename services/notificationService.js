@@ -1,8 +1,9 @@
 const notificationRepository = require('../repositories/notificationRepository');
 const reportRepository = require('../repositories/reportRepository');
+const adminRepository = require('../repositories/adminRepository');
 const fcmService = require('./fcmService');
 const { createHttpError } = require('../utils/personnelValidation');
-const { logError } = require('../utils/logger');
+const { logError, logInfo } = require('../utils/logger');
 
 const NOTIFICATION_TYPES = Object.freeze({
   PERSONNEL_ASSIGNED: 'PERSONNEL_ASSIGNED',
@@ -11,7 +12,12 @@ const NOTIFICATION_TYPES = Object.freeze({
   ADMIN_RESPONSE_UPDATED: 'ADMIN_RESPONSE_UPDATED',
   REPORT_DENIED: 'REPORT_DENIED',
   REPORT_COMPLETED: 'REPORT_COMPLETED',
+  // Phase 3A — admin-facing event created when a resident submits a report.
+  NEW_REPORT: 'NEW_REPORT',
 });
+
+/** Event types that are delivered to administrators, not residents. */
+const ADMIN_EVENT_TYPES = Object.freeze([NOTIFICATION_TYPES.NEW_REPORT]);
 
 const cleanText = (value, maxLength) =>
   String(value || '')
@@ -59,10 +65,19 @@ const eventContent = (type, report) => {
         title: 'Report Completed',
         message: `Cleanup is complete and your report has been resolved. ${reportReference(report)}`,
       };
+    case NOTIFICATION_TYPES.NEW_REPORT:
+      return {
+        title: 'New Report Submitted',
+        message: `A resident submitted a new report. ${reportReference(report)}`,
+      };
     default:
       throw createHttpError(400, 'Unsupported notification event type.');
   }
 };
+
+function isAdminEventType(type) {
+  return ADMIN_EVENT_TYPES.includes(type);
+}
 
 function normalizeEventType(value) {
   const type = String(value || '').trim().toUpperCase();
@@ -154,10 +169,103 @@ async function createForReportEvent({
   return { notification, push };
 }
 
+/**
+ * Phase 3A — creates the admin-facing notification for a newly submitted report
+ * and broadcasts it to every bound administrator device.
+ *
+ * Deliberately never throws for the push step: the report is already committed,
+ * so a notification or FCM failure is logged and reconciled by the Admin app's
+ * own REST sync rather than failing the resident's submission.
+ */
+async function createForAdminReportEvent({
+  reportId,
+  type: rawType,
+  report: suppliedReport = null,
+  requestId = null,
+}) {
+  const type = normalizeEventType(rawType);
+  if (!isAdminEventType(type)) {
+    throw createHttpError(400, 'type must be an administrator report event.');
+  }
+
+  const normalizedReportId = String(reportId || suppliedReport?.report_id || '').trim();
+  if (!normalizedReportId || normalizedReportId.length > 100) {
+    throw createHttpError(400, 'A valid reportId is required.');
+  }
+
+  const report = suppliedReport || await reportRepository.findByReportId(normalizedReportId);
+  if (!report) {
+    throw createHttpError(404, 'Report not found.');
+  }
+
+  const content = eventContent(type, report);
+  const adminRecipients = await adminRepository.findAllFcmTokens();
+  const results = [];
+
+  for (const recipient of adminRecipients) {
+    // The owner column is the account ID, so an administrator reads the same
+    // rows back through the shared notification center.
+    try {
+      const notification = await notificationRepository.createNotification({
+        residentId: recipient.adminId,
+        reportId: report.report_id,
+        title: content.title,
+        message: content.message,
+        type,
+      });
+      results.push({ adminId: recipient.adminId, notification });
+    } catch (error) {
+      logError(
+        requestId,
+        'NEW_REPORT_NOTIFICATION',
+        `Unable to persist ${type} for admin ${recipient.adminId}: ${error.message}`
+      );
+    }
+  }
+
+  const firstNotification = results.find((entry) => entry.notification)?.notification || null;
+
+  let push = { skipped: true, reason: 'NOT_ATTEMPTED' };
+  try {
+    push = await fcmService.sendAdminNewReportNotification({
+      notificationId: firstNotification?.notification_id ?? normalizedReportId,
+      reportId: report.report_id,
+      type,
+      title: content.title,
+      message: content.message,
+      createdAt: firstNotification?.created_at || new Date().toISOString(),
+      requestId,
+    });
+  } catch (error) {
+    logError(
+      requestId,
+      'FCM_ADMIN_BROADCAST',
+      `Unable to broadcast ${type} for report ${report.report_id}: ${error.message}`
+    );
+    push = { delivered: false, reason: 'SEND_FAILED' };
+  }
+
+  logInfo(
+    requestId,
+    'NEW_REPORT',
+    `reportId=${report.report_id} recipients=${results.length} tokenCount=${push.tokenCount ?? adminRecipients.length} delivered=${push.successCount ?? 0} reason=${push.reason || 'SENT'}`
+  );
+
+  return {
+    type,
+    notification: firstNotification,
+    recipients: results.map((entry) => entry.adminId),
+    push,
+  };
+}
+
 module.exports = {
   NOTIFICATION_TYPES,
+  ADMIN_EVENT_TYPES,
   createForReportEvent,
+  createForAdminReportEvent,
   eventContent,
+  isAdminEventType,
   normalizeEventType,
   validateCreateEventRequest,
 };

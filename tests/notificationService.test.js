@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 
 const {
   NOTIFICATION_TYPES,
+  ADMIN_EVENT_TYPES,
   eventContent,
+  isAdminEventType,
   normalizeEventType,
   validateCreateEventRequest,
 } = require('../services/notificationService');
@@ -24,6 +26,7 @@ test('server owns every required report notification message', () => {
       'ADMIN_RESPONSE_UPDATED',
       'REPORT_DENIED',
       'REPORT_COMPLETED',
+      'NEW_REPORT',
     ]
   );
 
@@ -32,6 +35,24 @@ test('server owns every required report notification message', () => {
     assert.ok(content.title.length > 0);
     assert.match(content.message, /REP-001/);
   }
+});
+
+// Phase 3A — NEW_REPORT is the only administrator-facing event; every other
+// type is still delivered to the resident who owns the report.
+test('only NEW_REPORT is addressed to administrators', () => {
+  assert.deepEqual(ADMIN_EVENT_TYPES, ['NEW_REPORT']);
+  assert.equal(isAdminEventType('NEW_REPORT'), true);
+
+  for (const type of Object.values(NOTIFICATION_TYPES).filter((value) => value !== 'NEW_REPORT')) {
+    assert.equal(isAdminEventType(type), false);
+  }
+});
+
+test('NEW_REPORT content is server-authored and names the report', () => {
+  const content = eventContent('NEW_REPORT', report);
+  assert.equal(content.title, 'New Report Submitted');
+  assert.match(content.message, /resident submitted a new report/i);
+  assert.match(content.message, /REP-001/);
 });
 
 test('admin event endpoint accepts only reportId and type', () => {

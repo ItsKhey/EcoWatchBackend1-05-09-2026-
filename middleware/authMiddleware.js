@@ -191,6 +191,29 @@ const protectResident = (req, res, next) => {
   return next();
 };
 
+/**
+ * Phase 3A — notification-center ownership.
+ *
+ * The notification center is account-scoped, not role-scoped: an administrator
+ * owns the same rows as a resident does, keyed by their own account ID. This
+ * admits either identity and publishes exactly one owner ID, so every
+ * notification route stays scoped to the caller and no controller change is
+ * required. Personnel compatibility identities remain excluded.
+ */
+const protectNotificationOwner = (req, res, next) => {
+  const adminId = req.admin?.admin_id;
+  if (adminId) {
+    req.auth = {
+      accountType: 'ADMIN',
+      role: 'ADMIN',
+      residentId: adminId,
+    };
+    return next();
+  }
+
+  return protectResident(req, res, next);
+};
+
 const protectPersonnel = async (req, res, next) => {
   const authorization = req.headers.authorization;
 
@@ -269,4 +292,9 @@ const protectPersonnel = async (req, res, next) => {
   return next();
 };
 
-module.exports = { protect, protectResident, protectPersonnel };
+module.exports = {
+  protect,
+  protectResident,
+  protectNotificationOwner,
+  protectPersonnel,
+};

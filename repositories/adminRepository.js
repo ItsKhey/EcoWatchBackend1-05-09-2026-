@@ -187,6 +187,100 @@ async function updatePassword(adminId, passwordHash) {
   return result.rows[0] || null;
 }
 
+/**
+ * Phase 3A: binds a device FCM token to an administrator. Mirrors
+ * residentRepository.claimFcmToken: an advisory transaction lock guarantees a
+ * token can never be bound to two accounts, and account switching on one device
+ * moves the token instead of duplicating it.
+ */
+async function claimFcmToken(adminId, token) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext('myecowatch:phase-3a:admin-fcm-token:v1'))"
+    );
+    await client.query(
+      `
+      UPDATE admins
+      SET fcm_token = NULL
+      WHERE fcm_token = $1
+        AND admin_id <> $2
+      `,
+      [token, adminId]
+    );
+    const result = await client.query(
+      `
+      UPDATE admins
+      SET fcm_token = $2,
+          updated_at = NOW()
+      WHERE admin_id = $1
+        AND lower(trim(COALESCE(role, 'ADMIN'))) = 'admin'
+      RETURNING admin_id
+      `,
+      [adminId, token]
+    );
+    await client.query('COMMIT');
+    return result.rowCount === 1;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error(`[ADMIN_FCM_TOKEN] Rollback failed: ${rollbackError.message}`);
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function clearFcmToken(adminId, expectedToken = null) {
+  const values = expectedToken ? [adminId, expectedToken] : [adminId];
+  const predicate = expectedToken ? 'AND fcm_token = $2' : '';
+  const result = await pool.query(
+    `
+    UPDATE admins
+    SET fcm_token = NULL
+    WHERE admin_id = $1
+      ${predicate}
+    RETURNING admin_id
+    `,
+    values
+  );
+  return result.rowCount === 1;
+}
+
+/** Removes a token FCM has already rejected, wherever it is still stored. */
+async function clearFcmTokenByValue(token) {
+  const result = await pool.query(
+    `
+    UPDATE admins
+    SET fcm_token = NULL
+    WHERE fcm_token = $1
+    RETURNING admin_id
+    `,
+    [token]
+  );
+  return result.rowCount;
+}
+
+/** Every administrator device currently eligible to receive a broadcast. */
+async function findAllFcmTokens(queryable = pool) {
+  const result = await queryable.query(
+    `
+    SELECT admin_id, fcm_token
+    FROM admins
+    WHERE fcm_token IS NOT NULL
+      AND btrim(fcm_token) <> ''
+      AND lower(trim(COALESCE(role, 'ADMIN'))) = 'admin'
+    `
+  );
+
+  return result.rows
+    .map((row) => ({ adminId: row.admin_id, token: row.fcm_token }))
+    .filter((row) => typeof row.token === 'string' && row.token.trim().length > 0);
+}
+
 module.exports = {
   findByIdentifier,
   findByAdminId,
@@ -196,4 +290,8 @@ module.exports = {
   updateAdmin,
   touchLastActive,
   updatePassword,
+  claimFcmToken,
+  clearFcmToken,
+  clearFcmTokenByValue,
+  findAllFcmTokens,
 };

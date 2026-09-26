@@ -1,12 +1,23 @@
 const { pool } = require('../config/db');
+const { tablesFor } = require('../utils/notificationTables');
 
-const ACTIVE_NOTIFICATION_SELECT = `
+/**
+ * Notification store for the account that owns the rows.
+ *
+ * Resident and administrator accounts are stored in separate table pairs that
+ * mirror each other, because the resident tables are referentially bound to
+ * the residents table. The SQL is otherwise identical for both, so every
+ * caller keeps one code path: list, read, unread count, trash, and delete all
+ * resolve their tables from the owner ID.
+ */
+
+const activeNotificationSelect = (tables) => `
   SELECT n.*
-  FROM notifications n
+  FROM ${tables.notifications} n
   WHERE n.resident_id = $1
     AND NOT EXISTS (
       SELECT 1
-      FROM trash_notifications t
+      FROM ${tables.trash} t
       WHERE t.notification_id = n.notification_id
         AND t.resident_id = n.resident_id
     )
@@ -16,7 +27,7 @@ async function findAllByResidentId(residentId, limit = 200, queryable = pool) {
   const safeLimit = Math.min(200, Math.max(1, Number(limit) || 200));
   const result = await queryable.query(
     `
-    ${ACTIVE_NOTIFICATION_SELECT}
+    ${activeNotificationSelect(tablesFor(residentId))}
     ORDER BY n.created_at DESC, n.notification_id DESC
     LIMIT $2
     `,
@@ -28,11 +39,12 @@ async function findAllByResidentId(residentId, limit = 200, queryable = pool) {
 
 async function findTrashByResidentId(residentId, limit = 200, queryable = pool) {
   const safeLimit = Math.min(200, Math.max(1, Number(limit) || 200));
+  const tables = tablesFor(residentId);
   const result = await queryable.query(
     `
     SELECT n.*, t.deleted_at AS trashed_at
-    FROM trash_notifications t
-    JOIN notifications n
+    FROM ${tables.trash} t
+    JOIN ${tables.notifications} n
       ON n.notification_id = t.notification_id
      AND n.resident_id = t.resident_id
     WHERE t.resident_id = $1
@@ -46,6 +58,8 @@ async function findTrashByResidentId(residentId, limit = 200, queryable = pool) 
 }
 
 async function findById(notificationId, queryable = pool) {
+  // Unscoped lookup is only used for diagnostics; it reads the resident table
+  // so it can never leak an administrator's notification.
   const result = await queryable.query(
     `
     SELECT *
@@ -63,7 +77,7 @@ async function findOwnedById(notificationId, residentId, queryable = pool) {
   const result = await queryable.query(
     `
     SELECT *
-    FROM notifications
+    FROM ${tablesFor(residentId).notifications}
     WHERE notification_id = $1
       AND resident_id = $2
     LIMIT 1
@@ -84,7 +98,7 @@ async function createNotification({
 }, queryable = pool) {
   const result = await queryable.query(
     `
-    INSERT INTO notifications (
+    INSERT INTO ${tablesFor(residentId).notifications} (
       resident_id,
       report_id,
       title,
@@ -113,7 +127,7 @@ async function createNotification({
 async function markAsRead(notificationId, residentId) {
   const result = await pool.query(
     `
-    UPDATE notifications
+    UPDATE ${tablesFor(residentId).notifications}
     SET is_read = true
     WHERE notification_id = $1
       AND resident_id = $2
@@ -126,15 +140,16 @@ async function markAsRead(notificationId, residentId) {
 }
 
 async function markAllAsRead(residentId) {
+  const tables = tablesFor(residentId);
   const result = await pool.query(
     `
-    UPDATE notifications AS n
+    UPDATE ${tables.notifications} AS n
     SET is_read = true
     WHERE n.resident_id = $1
       AND n.is_read = false
       AND NOT EXISTS (
         SELECT 1
-        FROM trash_notifications AS t
+        FROM ${tables.trash} AS t
         WHERE t.notification_id = n.notification_id
           AND t.resident_id = n.resident_id
       )
@@ -147,15 +162,16 @@ async function markAllAsRead(residentId) {
 }
 
 async function countUnreadByResidentId(residentId) {
+  const tables = tablesFor(residentId);
   const result = await pool.query(
     `
     SELECT COUNT(*)::int AS unread_count
-    FROM notifications AS n
+    FROM ${tables.notifications} AS n
     WHERE n.resident_id = $1
       AND n.is_read = false
       AND NOT EXISTS (
         SELECT 1
-        FROM trash_notifications AS t
+        FROM ${tables.trash} AS t
         WHERE t.notification_id = n.notification_id
           AND t.resident_id = n.resident_id
       )
@@ -169,7 +185,7 @@ async function countUnreadByResidentId(residentId) {
 async function deleteOwnedById(notificationId, residentId) {
   const result = await pool.query(
     `
-    DELETE FROM notifications
+    DELETE FROM ${tablesFor(residentId).notifications}
     WHERE notification_id = $1
       AND resident_id = $2
     RETURNING *

@@ -3,6 +3,8 @@ const router = express.Router();
 const {
   loginAdmin,
   getCurrentAdmin,
+  registerAdminFcmToken,
+  clearAdminFcmToken,
   getAllReports,
   archiveAdminReport,
   trashAdminReport,
@@ -48,6 +50,10 @@ router.use(admin);
 
 router.get('/me', getCurrentAdmin);
 router.get('/account', getCurrentAdmin); // Compatibility alias for older clients
+
+// Phase 3A — device FCM token binding for administrator push delivery.
+router.post('/fcm-token', registerAdminFcmToken);
+router.delete('/fcm-token', clearAdminFcmToken);
 router.get('/reports', getAllReports);
 
 // Administrator-owned lifecycle routes. These intentionally do not reuse the

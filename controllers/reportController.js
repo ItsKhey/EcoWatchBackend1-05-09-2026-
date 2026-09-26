@@ -8,6 +8,7 @@ const { uploadImage } = require('../services/cloudinaryService');
 const {
   releaseReportAssignment,
 } = require('../services/reportAssignmentService');
+const notificationService = require('../services/notificationService');
 const { logInfo, logError } = require('../utils/logger');
 
 const normalizeAssignedPersonnelIds = (value) => {
@@ -231,6 +232,23 @@ const createReport = async (req, res, next) => {
     });
     if (!historyLogged) {
       logError(req.requestId, 'REPORT', `Report ${report.report_id} was created but submission history could not be written`);
+    }
+
+    // Phase 3A: notify administrators. The report is already committed, so a
+    // notification or push failure must never fail the resident's submission.
+    try {
+      await notificationService.createForAdminReportEvent({
+        reportId: report.report_id,
+        type: notificationService.NOTIFICATION_TYPES.NEW_REPORT,
+        report,
+        requestId: req.requestId,
+      });
+    } catch (error) {
+      logError(
+        req.requestId,
+        'NEW_REPORT',
+        `Report ${report.report_id} was created but the administrator notification failed: ${error.message}`
+      );
     }
 
     return res.status(201).json(normalizeReport(report));

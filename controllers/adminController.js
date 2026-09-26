@@ -33,6 +33,8 @@ const {
   findByIdentifier,
   findByAdminId,
   touchLastActive,
+  claimFcmToken,
+  clearFcmToken,
 } = require('../repositories/adminRepository');
 
 const {
@@ -48,6 +50,7 @@ const {
 } = require('../utils/reportStatusValidation');
 
 const generateToken = require('../utils/generateToken');
+const { logInfo } = require('../utils/logger');
 
 const mapAdminAccount = (admin) => ({
   adminId: admin.admin_id,
@@ -465,9 +468,59 @@ const approveReportCompletion = async (
   }
 };
 
+/**
+ * Phase 3A — binds this device's FCM token to the authenticated administrator
+ * so NEW_REPORT broadcasts are delivered. The administrator identity comes only
+ * from the verified token, never from the request body.
+ */
+const registerAdminFcmToken = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    const forbidden = ['adminId', 'admin_id', 'residentId', 'resident_id']
+      .filter((key) => Object.prototype.hasOwnProperty.call(req.body || {}, key));
+    if (forbidden.length) {
+      throw createHttpError(
+        400,
+        `Administrator identity is server-owned; remove: ${forbidden.join(', ')}.`
+      );
+    }
+
+    const token = String(req.body?.token || req.body?.fcmToken || '').trim();
+    if (
+      token.length < 20
+      || token.length > 4096
+      || /[\s\u0000-\u001F\u007F]/.test(token)
+    ) {
+      throw createHttpError(400, 'A valid FCM registration token is required.');
+    }
+
+    const claimed = await claimFcmToken(adminId, token);
+    if (!claimed) throw createHttpError(404, 'Administrator account not found.');
+
+    logInfo(req.requestId, 'ADMIN_FCM_TOKEN', `Token registered for admin ${adminId}`);
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** Releases the device token so a later login can rebind it. */
+const clearAdminFcmToken = async (req, res, next) => {
+  try {
+    const adminId = requireAdminActor(req);
+    await clearFcmToken(adminId);
+    logInfo(req.requestId, 'ADMIN_FCM_TOKEN', `Token cleared for admin ${adminId}`);
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   loginAdmin,
   getCurrentAdmin,
+  registerAdminFcmToken,
+  clearAdminFcmToken,
   getAllReports,
   archiveAdminReport,
   trashAdminReport,
