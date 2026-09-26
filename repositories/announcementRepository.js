@@ -204,12 +204,30 @@ async function findById(announcementId, queryable = pool) {
   return mapAnnouncement(result.rows[0]);
 }
 
+/**
+ * Permanently removes one announcement.
+ *
+ * <p>Returns true when a row went away and false when the id matched nothing, so
+ * the caller can answer 404 rather than reporting a delete that never happened.
+ * Notifications already delivered for it are left in place: a resident who saw
+ * the notice keeps a record that they were told.
+ */
+async function deleteById(announcementId, queryable = pool) {
+  const result = await queryable.query(
+    'DELETE FROM announcements WHERE id = $1 RETURNING id',
+    [announcementId]
+  );
+
+  return result.rows.length > 0;
+}
+
 module.exports = {
   createAnnouncement,
   findAll,
   findExpired,
   findForResident,
   findById,
+  deleteById,
   countAll,
   deleteExpired,
   mapAnnouncement,

@@ -228,9 +228,19 @@ test('the resident feed is newest first', async () => {
   const feed = await announcementRepository.findForResident(RESIDENT_A, { limit: 20, offset: 0 });
   const titles = feed.map((entry) => entry.title);
 
-  assert.equal(titles[0], 'Third notice');
-  assert.equal(titles[1], 'Second notice');
-  assert.equal(titles[2], 'First notice');
+  // Assert the relative order of the rows this test created rather than their
+  // absolute place in the feed. Every announcement test file inserts into the
+  // same table and node runs the files concurrently, so claiming the first slots
+  // makes this depend on which other suite happened to be writing at the time.
+  const newest = titles.indexOf('Third notice');
+  const middle = titles.indexOf('Second notice');
+  const oldest = titles.indexOf('First notice');
+
+  assert.ok(newest !== -1, 'the newest notice is in the feed');
+  assert.ok(middle !== -1, 'the second notice is in the feed');
+  assert.ok(oldest !== -1, 'the oldest notice is in the feed');
+  assert.ok(newest < middle, 'the newest notice is listed first');
+  assert.ok(middle < oldest, 'the older notice is listed after it');
 });
 
 test('an admin cannot read the resident feed', async () => {

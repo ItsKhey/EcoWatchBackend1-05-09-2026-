@@ -124,6 +124,77 @@ async function createNotification({
   return result.rows[0];
 }
 
+/**
+ * Rows per multi-VALUES statement when fanning a broadcast out.
+ *
+ * <p>Five bound parameters per row, so this stays far below the 65535 parameter
+ * ceiling a statement is allowed. Big enough that a city-wide announcement is a
+ * handful of round trips instead of thousands.
+ */
+const BROADCAST_INSERT_CHUNK = 500;
+
+/**
+ * Writes one notification row per resident in a handful of statements.
+ *
+ * <p>Exists because a broadcast is written before the push, and doing that one
+ * INSERT per resident turned publishing into an O(N) request. The rows are
+ * identical apart from the owner, so they go in together.
+ *
+ * <p>Returns the created rows keyed by resident id so the caller can pair each
+ * resident with their own notification_id. A resident whose insert failed is
+ * simply absent, which is the same outcome the one-at-a-time loop produced.
+ */
+async function createNotificationsForResidents({
+  residentIds,
+  reportId = null,
+  title,
+  message,
+  type,
+}, queryable = pool) {
+  const ids = (Array.isArray(residentIds) ? residentIds : [])
+    .filter((value) => typeof value === 'string' && value.trim().length > 0);
+  if (ids.length === 0) return [];
+
+  const table = tablesFor(ids[0]).notifications;
+  const created = [];
+
+  for (let offset = 0; offset < ids.length; offset += BROADCAST_INSERT_CHUNK) {
+    const chunk = ids.slice(offset, offset + BROADCAST_INSERT_CHUNK);
+    const values = [];
+    const params = [];
+
+    chunk.forEach((residentId, index) => {
+      // Five bound parameters per row: is_read is always false for a broadcast,
+      // so it is written as a literal rather than consuming a placeholder.
+      const base = index * 5;
+      values.push(
+        `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, false)`
+      );
+      params.push(residentId, reportId, title, message, type);
+    });
+
+    const result = await queryable.query(
+      `
+      INSERT INTO ${table} (
+        resident_id,
+        report_id,
+        title,
+        message,
+        type,
+        is_read
+      )
+      VALUES ${values.join(', ')}
+      RETURNING *
+      `,
+      params
+    );
+
+    created.push(...result.rows);
+  }
+
+  return created;
+}
+
 async function markAsRead(notificationId, residentId) {
   const result = await pool.query(
     `
@@ -202,6 +273,7 @@ module.exports = {
   findById,
   findOwnedById,
   createNotification,
+  createNotificationsForResidents,
   markAsRead,
   markAllAsRead,
   countUnreadByResidentId,

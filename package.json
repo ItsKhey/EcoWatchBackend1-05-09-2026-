@@ -23,6 +23,9 @@
     "migrate:announcements": "node migration/migrate-announcements.js",
     "migrate:announcement-expiry": "node migration/migrate-announcement-expiry.js",
     "migrate:announcement-notifications": "node migration/migrate-announcement-notifications.js",
+    "migrate:notification-preferences": "node migration/migrate-notification-preferences.js",
+    "migrate:notification-preferences-followup": "node migration/migrate-notification-preferences-followup.js",
+    "verify:announcements": "node scripts/verify-announcements.js",
     "migrate:resident-account-lifecycle": "node migration/migrate-resident-account-lifecycle.js",
     "verify:phase-3a": "node scripts/verify-phase-3a.js"
   },

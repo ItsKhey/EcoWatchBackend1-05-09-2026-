@@ -10,6 +10,10 @@ const {
   getMyNotifications,
   getMyTrash,
   getUnreadCount,
+  getPreferences,
+  updatePreferences,
+  getAdminPreferences,
+  updateAdminPreferences,
   markAsRead,
   markAllAsRead,
   updateFcmToken,
@@ -30,6 +34,16 @@ router.get('/my-notifications', ...ownerOnly, getMyNotifications);
 router.get('/trash', ...ownerOnly, getMyTrash);
 router.get('/unread-count', ...ownerOnly, getUnreadCount);
 router.patch('/mark-as-read', ...ownerOnly, markAllAsRead);
+
+// Notification choices are per account rather than per device, so they survive a
+// reinstall and can be read by the server when it decides who to push to.
+// Split by role so a resident can never address an administrator's record.
+router.get('/preferences', ...residentOnly, getPreferences);
+router.put('/preferences', ...residentOnly, updatePreferences);
+
+const adminOnly = [protect, admin];
+router.get('/admin-preferences', ...adminOnly, getAdminPreferences);
+router.put('/admin-preferences', ...adminOnly, updateAdminPreferences);
 
 // Device tokens stay role-specific: an administrator registers through
 // /admin/fcm-token so a token is never written to the residents table.

@@ -266,10 +266,46 @@ const getMyAnnouncements = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Permanently delete one published announcement
+ * @route   DELETE /api/announcements/:announcementId
+ * @access  Private/Admin
+ *
+ * The counterpart to the expiry sweep, for an administrator who published with
+ * the "never expires" window and needs it taken down. Announcements have no
+ * trash table, so this is a real DELETE: there is no restore.
+ */
+const deleteAnnouncement = async (req, res, next) => {
+  try {
+    const announcementId = String(req.params.announcementId || '').trim();
+    // bigserial, so the id is always a positive integer. Validating it here
+    // turns a bad path into a clear 400 instead of a Postgres cast error.
+    if (!/^\d{1,19}$/.test(announcementId)) {
+      throw createHttpError(400, 'Invalid announcement ID.');
+    }
+
+    const deleted = await announcementRepository.deleteById(announcementId);
+    if (!deleted) {
+      throw createHttpError(404, 'Announcement not found.');
+    }
+
+    logInfo(
+      req.requestId,
+      'ANNOUNCEMENT',
+      `Announcement ${announcementId} permanently deleted by admin ${req.admin?.admin_id}`
+    );
+
+    res.json({ success: true, announcementId, deleted: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createAnnouncement,
   listAnnouncements,
   getMyAnnouncements,
+  deleteAnnouncement,
   validateAnnouncementPayload,
   normalizeExpiryDays,
   SUPPORTED_AUDIENCES,

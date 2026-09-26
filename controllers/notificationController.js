@@ -1,4 +1,6 @@
 const notificationRepository = require('../repositories/notificationRepository');
+const notificationPreferenceRepository = require('../repositories/notificationPreferenceRepository');
+const adminNotificationPreferenceRepository = require('../repositories/adminNotificationPreferenceRepository');
 const trashNotificationRepository = require('../repositories/trashNotificationRepository');
 const residentRepository = require('../repositories/residentRepository');
 const notificationService = require('../services/notificationService');
@@ -8,6 +10,198 @@ const residentIdFromRequest = (req) => {
   const residentId = req.auth?.residentId || req.resident?.resident_id;
   if (!residentId) throw createHttpError(401, 'Resident identity is missing.');
   return residentId;
+};
+
+/**
+ * Fields the resident endpoints accept, with their expected type.
+ *
+ * <p>Explicit allowlist rather than iterating the request body: an unknown key is
+ * a client bug, and silently storing it would let a typo'd field look like it
+ * had been saved.
+ */
+const RESIDENT_PREFERENCE_FIELDS = Object.freeze({
+  masterEnabled: 'boolean',
+  reportStatusUpdates: 'boolean',
+  reportCompleted: 'boolean',
+  reportDenied: 'boolean',
+  cenroAnnouncements: 'boolean',
+  securityAlerts: 'boolean',
+  soundEnabled: 'boolean',
+  vibrationEnabled: 'boolean',
+  soundUri: 'string',
+});
+
+/**
+ * Fields the administrator endpoints accept.
+ *
+ * <p>A superset of the resident set: the Admin app exposes operations categories
+ * the resident app has no equivalent for. Listed explicitly so a resident field
+ * cannot be written through the admin endpoint by accident.
+ */
+const ADMIN_PREFERENCE_FIELDS = Object.freeze({
+  masterEnabled: 'boolean',
+  reportStatusUpdates: 'boolean',
+  reportCompleted: 'boolean',
+  reportDenied: 'boolean',
+  cenroAnnouncements: 'boolean',
+  securityAlerts: 'boolean',
+  highPriorityReports: 'boolean',
+  personnelAccepted: 'boolean',
+  personnelCleaning: 'boolean',
+  photoUpdates: 'boolean',
+  awaitingApproval: 'boolean',
+  archivedReports: 'boolean',
+  maintenanceAlerts: 'boolean',
+  soundEnabled: 'boolean',
+  vibrationEnabled: 'boolean',
+  soundUri: 'string',
+});
+
+/**
+ * Normalises a preference body: accepts either casing, rejects fields the caller
+ * is not allowed to set, and checks each value against its declared type.
+ *
+ * <p>Shared by the resident and administrator endpoints so both enforce the same
+ * rules; only the allowed set and the repository differ.
+ */
+const parsePreferenceBody = (body, aliases, allowed) => {
+  if (!body || typeof body !== 'object') {
+    throw createHttpError(400, 'A preferences object is required.');
+  }
+
+  // Tolerate the snake_case the database uses so either casing round-trips.
+  const source = { ...body };
+  for (const [alias, canonical] of Object.entries(aliases)) {
+    if (source[alias] !== undefined && source[canonical] === undefined) {
+      source[canonical] = source[alias];
+    }
+    delete source[alias];
+  }
+
+  const unknown = Object.keys(source).filter((key) => !(key in allowed));
+  if (unknown.length > 0) {
+    throw createHttpError(400, `Unknown preference field(s): ${unknown.join(', ')}.`);
+  }
+
+  const provided = Object.keys(source);
+  if (provided.length === 0) {
+    throw createHttpError(400, 'At least one preference field is required.');
+  }
+
+  for (const key of provided) {
+    if (allowed[key] === 'string') {
+      // soundUri is a nullable text column. An empty string clears it, which is
+      // how a resident returns to the device default.
+      if (source[key] !== null && typeof source[key] !== 'string') {
+        throw createHttpError(400, `Preference field '${key}' must be a string or null.`);
+      }
+      if (typeof source[key] === 'string') {
+        const value = source[key].trim();
+        if (value.length > 2048) {
+          throw createHttpError(400, `Preference field '${key}' is too long.`);
+        }
+        source[key] = value.length === 0 ? null : value;
+      }
+      continue;
+    }
+
+    // A non-boolean is rejected rather than coerced: coercing here is how a
+    // malformed client would silently turn notifications off.
+    if (typeof source[key] !== 'boolean') {
+      throw createHttpError(
+        400,
+        `Preference field(s) must be true or false: ${key}.`
+      );
+    }
+  }
+
+  return source;
+};
+
+/**
+ * Reads the stored choices for the signed-in resident.
+ *
+ * <p>Returns the defaults when nothing is stored yet, so the settings screen
+ * has something to render on a first run without needing a write first.
+ */
+const getPreferences = async (req, res, next) => {
+  try {
+    const preferences = await notificationPreferenceRepository.findByResidentId(
+      residentIdFromRequest(req)
+    );
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, preferences });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Replaces the signed-in resident's stored choices.
+ *
+ * <p>Unspecified fields keep their stored value, so a client that only tracks
+ * announcements does not reset the categories it never knew about.
+ */
+const updatePreferences = async (req, res, next) => {
+  try {
+    const residentId = residentIdFromRequest(req);
+    const provided = parsePreferenceBody(
+      req.body,
+      notificationPreferenceRepository.CAMEL_TO_SNAKE,
+      RESIDENT_PREFERENCE_FIELDS
+    );
+
+    const current = await notificationPreferenceRepository.findByResidentId(residentId);
+    const preferences = await notificationPreferenceRepository.upsert(residentId, {
+      ...current,
+      ...provided,
+    });
+    res.json({ success: true, preferences });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Reads the signed-in administrator's stored choices.
+ *
+ * <p>Served from the administrator table rather than the resident one: an
+ * admin/notification-preferences row without an admins FK could be created by a
+ * resident caller and then read by nobody.
+ */
+const getAdminPreferences = async (req, res, next) => {
+  try {
+    const adminId = req.admin?.admin_id;
+    if (!adminId) throw createHttpError(401, 'Administrator identity is missing.');
+
+    const preferences = await adminNotificationPreferenceRepository.findByAdminId(adminId);
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, preferences });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateAdminPreferences = async (req, res, next) => {
+  try {
+    const adminId = req.admin?.admin_id;
+    if (!adminId) throw createHttpError(401, 'Administrator identity is missing.');
+
+    const provided = parsePreferenceBody(
+      req.body,
+      adminNotificationPreferenceRepository.CAMEL_TO_SNAKE,
+      ADMIN_PREFERENCE_FIELDS
+    );
+
+    const current = await adminNotificationPreferenceRepository.findByAdminId(adminId);
+    const preferences = await adminNotificationPreferenceRepository.upsert(adminId, {
+      ...current,
+      ...provided,
+    });
+    res.json({ success: true, preferences });
+  } catch (error) {
+    next(error);
+  }
 };
 
 const mapNotification = (row, { trashed = false } = {}) => ({
@@ -216,6 +410,10 @@ module.exports = {
   getMyNotifications,
   getMyTrash,
   getUnreadCount,
+  getPreferences,
+  updatePreferences,
+  getAdminPreferences,
+  updateAdminPreferences,
   markAsRead,
   markAllAsRead,
   updateFcmToken,

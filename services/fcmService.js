@@ -158,29 +158,50 @@ async function sendResidentReportNotification({
   }
 }
 
-/**
- * Phase 3A — every administrator device currently able to receive a broadcast.
- * Exposed so route/verification tooling can assert delivery reachability
- * without sending a message.
- */
-async function findAllAdminFcmTokens() {
-  const rows = await adminRepository.findAllFcmTokens();
-  return rows.map((row) => row.token);
-}
-
-/**
- * Every resident device currently able to receive a broadcast.
- *
- * <p>The resident counterpart to {@link findAllAdminFcmTokens}, exposed so
- * verification tooling can assert reachability without sending a message.
- */
-async function findAllResidentFcmTokens() {
-  const rows = await residentRepository.findAllFcmTokens();
-  return rows.map((row) => row.token);
-}
-
 /** Residents are pushed concurrently, but never all at once. */
 const RESIDENT_BROADCAST_CONCURRENCY = 20;
+
+/**
+ * Wall-clock budget for the whole announcement fan-out.
+ *
+ * <p>The publish request waits for this, so the budget is what stops a large
+ * resident list from pushing the publish past a client or proxy timeout. When
+ * it runs out, the remaining residents are reported as unattempted rather than
+ * left to hang: the in-app rows are already committed, so the announcement is
+ * delivered regardless and the next REST sync reconciles the rest.
+ */
+const RESIDENT_BROADCAST_DEADLINE_MS = (() => {
+  const configured = Number.parseInt(process.env.ANNOUNCEMENT_BROADCAST_DEADLINE_MS, 10);
+  return Number.isInteger(configured) && configured > 0 ? configured : 8000;
+})();
+
+/**
+ * Cap on a single FCM call.
+ *
+ * <p>Without this one hung request would consume the entire budget and starve
+ * every other recipient. The abandoned call is reported as a failure so it shows
+ * up in the tally instead of disappearing.
+ */
+const RESIDENT_SEND_TIMEOUT_MS = 5000;
+
+const withTimeout = (promise, timeoutMs, label) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(Object.assign(new Error(`${label} timed out after ${timeoutMs}ms`), {
+        code: 'FCM_SEND_TIMEOUT',
+      }));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 
 /**
  * Broadcasts an announcement to resident devices.
@@ -228,40 +249,62 @@ async function sendResidentAnnouncementNotification({
   const invalidTokens = [];
   let successCount = 0;
   let nextIndex = 0;
+  let timedOut = false;
+
+  // The budget is measured from the moment the fan-out starts, not from
+  // function entry, so a slow token lookup cannot eat into it.
+  const deadlineAt = Date.now() + RESIDENT_BROADCAST_DEADLINE_MS;
+  logInfo(
+    requestId,
+    'FCM_RESIDENT_BROADCAST',
+    `starting tokenCount=${list.length} concurrency=${Math.min(
+      RESIDENT_BROADCAST_CONCURRENCY,
+      list.length
+    )} budgetMs=${RESIDENT_BROADCAST_DEADLINE_MS}`
+  );
 
   const worker = async () => {
     while (nextIndex < list.length) {
+      if (Date.now() >= deadlineAt) {
+        timedOut = true;
+        return;
+      }
       const recipient = list[nextIndex];
       nextIndex += 1;
 
       try {
-        const messageId = await messaging.send({
-          token: recipient.token,
-          // Carries the notification block so Android renders the notice itself
-          // when the app is backgrounded, matching the report notifications.
-          notification: { title, body: message },
-          data: {
-            notificationId: String(recipient.notificationId),
-            // No report owns an announcement, so this stays empty and the app
-            // routes on type instead.
-            reportId: '',
-            type: String(type),
-            title: String(title),
-            message: String(message),
-            createdAt: String(createdAt || new Date().toISOString()),
-            // The resident app uses this to open the Announcements screen
-            // rather than the Alerts list when the notice is tapped.
-            announcementId: String(announcementId ?? ''),
-            targetScreen: 'ANNOUNCEMENTS',
-          },
-          android: {
-            priority: 'high',
-            notification: {
-              channelId: RESIDENT_CHANNEL_ID,
-              clickAction: RESIDENT_CLICK_ACTION,
+        const messageId = await withTimeout(
+          messaging.send({
+            token: recipient.token,
+            // Carries the notification block so Android renders the notice
+            // itself when the app is backgrounded, matching the report
+            // notifications.
+            notification: { title, body: message },
+            data: {
+              notificationId: String(recipient.notificationId),
+              // No report owns an announcement, so this stays empty and the app
+              // routes on type instead.
+              reportId: '',
+              type: String(type),
+              title: String(title),
+              message: String(message),
+              createdAt: String(createdAt || new Date().toISOString()),
+              // The resident app uses this to open the Announcements screen
+              // rather than the Alerts list when the notice is tapped.
+              announcementId: String(announcementId ?? ''),
+              targetScreen: 'ANNOUNCEMENTS',
             },
-          },
-        });
+            android: {
+              priority: 'high',
+              notification: {
+                channelId: RESIDENT_CHANNEL_ID,
+                clickAction: RESIDENT_CLICK_ACTION,
+              },
+            },
+          }),
+          RESIDENT_SEND_TIMEOUT_MS,
+          `FCM send for resident ${recipient.residentId}`
+        );
         successCount += 1;
         logInfo(
           requestId,
@@ -311,11 +354,27 @@ async function sendResidentAnnouncementNotification({
     );
   }
 
+  const notAttemptedCount = list.length - nextIndex;
+  if (notAttemptedCount > 0) {
+    logError(
+      requestId,
+      'FCM_RESIDENT_BROADCAST',
+      `budget of ${RESIDENT_BROADCAST_DEADLINE_MS}ms exhausted; `
+      + `${notAttemptedCount} of ${list.length} recipient(s) were not attempted. `
+      + 'Their in-app notification rows are committed, so the next REST sync '
+      + 'reconciles them.'
+    );
+  }
+
   return {
     delivered: successCount > 0,
     tokenCount: list.length,
     successCount,
     failureCount: failures.length,
+    // Distinguishes "we tried and it failed" from "we ran out of budget", which
+    // are different problems for whoever reads the logs.
+    notAttemptedCount,
+    timedOut: timedOut && notAttemptedCount > 0,
     failures,
   };
 }
@@ -335,10 +394,17 @@ async function sendAdminNewReportNotification({
   message,
   createdAt,
   requestId = null,
+  eligibleAdminIds = null,
 }) {
   let tokens;
   try {
-    tokens = await findAllAdminFcmTokens();
+    const rows = await adminRepository.findAllFcmTokens();
+    // A muted administrator's token is filtered out here rather than sent and
+    // discarded downstream, so it is never transmitted at all.
+    const allowed = Array.isArray(eligibleAdminIds) ? new Set(eligibleAdminIds) : null;
+    tokens = rows
+      .filter((row) => (allowed ? allowed.has(row.adminId) : true))
+      .map((row) => row.token);
   } catch (error) {
     logError(requestId, 'FCM_ADMIN_TOKENS', `Unable to read admin tokens: ${error.message}`);
     return { skipped: true, reason: 'TOKEN_LOOKUP_FAILED' };
@@ -455,8 +521,8 @@ module.exports = {
   ADMIN_CLICK_ACTION,
   RESIDENT_CHANNEL_ID,
   RESIDENT_CLICK_ACTION,
-  findAllAdminFcmTokens,
-  findAllResidentFcmTokens,
+  RESIDENT_BROADCAST_DEADLINE_MS,
+  RESIDENT_SEND_TIMEOUT_MS,
   sendAdminNewReportNotification,
   sendResidentAnnouncementNotification,
 };

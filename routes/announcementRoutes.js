@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   createAnnouncement,
   listAnnouncements,
+  deleteAnnouncement,
 } = require('../controllers/announcementController');
 const {
   protect,
@@ -16,6 +17,10 @@ const residentOnly = [protect, protectResident];
 // Publishing is administrator-only.
 router.post('/', protect, admin, createAnnouncement);
 router.get('/', protect, admin, listAnnouncements);
+
+// Declared after the two literals above so ":announcementId" cannot swallow
+// "/my-announcements".
+router.delete('/:announcementId', protect, admin, deleteAnnouncement);
 
 // The resident feed. Scoped to the caller so a resident can only ever read
 // announcements addressed to them.
