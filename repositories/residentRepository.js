@@ -251,6 +251,39 @@ async function findFcmTokenByResidentId(residentId) {
   return result.rows[0]?.fcm_token || null;
 }
 
+/**
+ * Every resident device currently eligible to receive a broadcast.
+ *
+ * <p>Mirrors {@link adminRepository.findAllFcmTokens} for the resident side. The
+ * resident id travels with the token because an announcement push is sent
+ * per-recipient: each resident's in-app notification row has its own
+ * notification_id, and reusing one id for the whole broadcast would make the
+ * device store the push copy and the REST copy as two separate rows.
+ *
+ * <p>Paused, blocked and soft-deleted accounts are excluded, reusing the same
+ * DISABLED_RESIDENT_STATUSES set the sign-in path applies, so a broadcast
+ * cannot reach someone who is no longer able to log in.
+ */
+async function findAllFcmTokens(queryable = pool) {
+  const result = await queryable.query(
+    `
+    SELECT resident_id, fcm_token
+    FROM residents
+    WHERE fcm_token IS NOT NULL
+      AND btrim(fcm_token) <> ''
+      AND lower(trim(COALESCE(role, 'RESIDENT'))) = 'resident'
+      AND lower(trim(COALESCE(status, 'AVAILABLE'))) NOT IN (
+        'disabled', 'inactive', 'blocked', 'suspended', 'deleted'
+      )
+      AND COALESCE(is_deleted, false) = false
+    `
+  );
+
+  return result.rows
+    .map((row) => ({ residentId: row.resident_id, token: row.fcm_token }))
+    .filter((row) => typeof row.token === 'string' && row.token.trim().length > 0);
+}
+
 async function findByUsername(username) {
   const result = await pool.query(
     `
@@ -668,6 +701,7 @@ module.exports = {
   findByIdentifier,
   findByResidentId,
   findFcmTokenByResidentId,
+  findAllFcmTokens,
   findByUsername,
   findByEmail,
   findLegacyPersonnelByIds,

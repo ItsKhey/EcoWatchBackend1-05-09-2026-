@@ -6,6 +6,7 @@ const {
   ADMIN_EVENT_TYPES,
   eventContent,
   isAdminEventType,
+  isBroadcastEventType,
   normalizeEventType,
   validateCreateEventRequest,
 } = require('../services/notificationService');
@@ -27,10 +28,16 @@ test('server owns every required report notification message', () => {
       'REPORT_DENIED',
       'REPORT_COMPLETED',
       'NEW_REPORT',
+      'ANNOUNCEMENT',
     ]
   );
 
-  for (const type of Object.values(NOTIFICATION_TYPES)) {
+  // ANNOUNCEMENT is excluded on purpose: it is a broadcast with no report, so
+  // its copy comes from announcementContent rather than this report-shaped
+  // builder. It is covered in announcementNotification.test.js.
+  for (const type of Object.values(NOTIFICATION_TYPES).filter(
+    (value) => value !== 'ANNOUNCEMENT'
+  )) {
     const content = eventContent(type, report);
     assert.ok(content.title.length > 0);
     assert.match(content.message, /REP-001/);
@@ -74,5 +81,19 @@ test('admin event endpoint accepts only reportId and type', () => {
 });
 
 test('unsupported client event types are rejected', () => {
-  assert.throws(() => normalizeEventType('ANNOUNCEMENT'), /supported/);
+  assert.throws(() => normalizeEventType('NOT_A_REAL_EVENT'), /supported/);
+});
+
+test('ANNOUNCEMENT is a known type but is not a report event', () => {
+  // It is a real notification type now, so normalizeEventType accepts it.
+  assert.equal(normalizeEventType('ANNOUNCEMENT'), 'ANNOUNCEMENT');
+  assert.equal(isBroadcastEventType('ANNOUNCEMENT'), true);
+  assert.equal(isAdminEventType('ANNOUNCEMENT'), false);
+
+  // It must not be creatable through the report-event route, which would
+  // attach a broadcast to an unrelated report.
+  assert.throws(
+    () => validateCreateEventRequest({ reportId: 'REP-001', type: 'ANNOUNCEMENT' }),
+    /report event/
+  );
 });

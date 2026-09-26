@@ -13,6 +13,18 @@ const { logInfo, logError } = require('../utils/logger');
 const ADMIN_CHANNEL_ID = 'ecowatch_admin_notifications';
 const ADMIN_CLICK_ACTION = 'com.example.ecowatchadmin1.action.OPEN_NOTIFICATION';
 
+/**
+ * Resident-facing channel and click action; must match the Resident app
+ * manifest and {@code NotificationRepository.CHANNEL_ID}.
+ *
+ * <p>These were previously inline string literals on the per-resident report
+ * send. They are exported now because the announcement broadcast needs the same
+ * pair, and two copies of a channel id is how a push ends up silently
+ * undeliverable.
+ */
+const RESIDENT_CHANNEL_ID = 'ecowatch_notifications';
+const RESIDENT_CLICK_ACTION = 'com.example.myecowatch1.action.OPEN_NOTIFICATION';
+
 let firebaseApp;
 
 function parseServiceAccountJson() {
@@ -126,8 +138,8 @@ async function sendResidentReportNotification({
       android: {
         priority: 'high',
         notification: {
-          channelId: 'ecowatch_notifications',
-          clickAction: 'com.example.myecowatch1.action.OPEN_NOTIFICATION',
+          channelId: RESIDENT_CHANNEL_ID,
+          clickAction: RESIDENT_CLICK_ACTION,
         },
       },
     });
@@ -154,6 +166,158 @@ async function sendResidentReportNotification({
 async function findAllAdminFcmTokens() {
   const rows = await adminRepository.findAllFcmTokens();
   return rows.map((row) => row.token);
+}
+
+/**
+ * Every resident device currently able to receive a broadcast.
+ *
+ * <p>The resident counterpart to {@link findAllAdminFcmTokens}, exposed so
+ * verification tooling can assert reachability without sending a message.
+ */
+async function findAllResidentFcmTokens() {
+  const rows = await residentRepository.findAllFcmTokens();
+  return rows.map((row) => row.token);
+}
+
+/** Residents are pushed concurrently, but never all at once. */
+const RESIDENT_BROADCAST_CONCURRENCY = 20;
+
+/**
+ * Broadcasts an announcement to resident devices.
+ *
+ * <p>Deliberately one message per resident rather than a single multicast. Each
+ * resident's in-app notification row carries its own notification_id, and the
+ * Resident app de-duplicates on that id: sending one shared id would let the
+ * device store the push copy and the REST copy of the same announcement as two
+ * separate rows in the Alerts list. Per-recipient sends keep the push id and
+ * the stored id identical, so a re-delivery is recognised as the same
+ * notification.
+ *
+ * <p>A single unreachable device never blocks the broadcast: each send is
+ * isolated, and unregistered tokens are pruned as they are discovered.
+ *
+ * @param {Array<{residentId: string, token: string, notificationId: number|string}>} recipients
+ * @returns {Promise<object>} delivery tally; never throws for a single failure.
+ */
+async function sendResidentAnnouncementNotification({
+  recipients,
+  announcementId,
+  type,
+  title,
+  message,
+  createdAt,
+  requestId = null,
+}) {
+  const list = Array.isArray(recipients) ? recipients.filter(Boolean) : [];
+  if (list.length === 0) {
+    return { skipped: true, reason: 'NO_TOKENS', tokenCount: 0 };
+  }
+
+  let messaging;
+  try {
+    messaging = getMessaging(getFirebaseApp());
+  } catch (error) {
+    if (error.code === 'FCM_NOT_CONFIGURED') {
+      logError(requestId, 'FCM_RESIDENT_BROADCAST', 'Firebase Admin is not configured.');
+      return { skipped: true, reason: 'NOT_CONFIGURED', tokenCount: list.length };
+    }
+    throw error;
+  }
+
+  const failures = [];
+  const invalidTokens = [];
+  let successCount = 0;
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (nextIndex < list.length) {
+      const recipient = list[nextIndex];
+      nextIndex += 1;
+
+      try {
+        const messageId = await messaging.send({
+          token: recipient.token,
+          // Carries the notification block so Android renders the notice itself
+          // when the app is backgrounded, matching the report notifications.
+          notification: { title, body: message },
+          data: {
+            notificationId: String(recipient.notificationId),
+            // No report owns an announcement, so this stays empty and the app
+            // routes on type instead.
+            reportId: '',
+            type: String(type),
+            title: String(title),
+            message: String(message),
+            createdAt: String(createdAt || new Date().toISOString()),
+            // The resident app uses this to open the Announcements screen
+            // rather than the Alerts list when the notice is tapped.
+            announcementId: String(announcementId ?? ''),
+            targetScreen: 'ANNOUNCEMENTS',
+          },
+          android: {
+            priority: 'high',
+            notification: {
+              channelId: RESIDENT_CHANNEL_ID,
+              clickAction: RESIDENT_CLICK_ACTION,
+            },
+          },
+        });
+        successCount += 1;
+        logInfo(
+          requestId,
+          'FCM_RESIDENT_BROADCAST',
+          `delivered messageId=${messageId} residentId=${recipient.residentId}`
+        );
+      } catch (error) {
+        const code = String(error?.code || 'UNKNOWN');
+        failures.push({ residentId: recipient.residentId, code, message: error?.message || '' });
+        logError(
+          requestId,
+          'FCM_RESIDENT_BROADCAST',
+          `failed residentId=${recipient.residentId} code=${code} message=${error?.message || ''}`
+        );
+
+        if (
+          code === 'messaging/registration-token-not-registered'
+          || code === 'messaging/invalid-registration-token'
+        ) {
+          invalidTokens.push(recipient);
+        }
+      }
+    }
+  };
+
+  const workerCount = Math.min(RESIDENT_BROADCAST_CONCURRENCY, list.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  // Prune tokens FCM has told us are dead so later broadcasts do not keep
+  // paying for them.
+  if (invalidTokens.length > 0) {
+    for (const stale of invalidTokens) {
+      try {
+        await residentRepository.clearFcmToken(stale.residentId, stale.token);
+      } catch (error) {
+        logError(
+          requestId,
+          'FCM_RESIDENT_BROADCAST',
+          `Token prune failed for resident ${stale.residentId}: ${error.message}`
+        );
+      }
+    }
+    logInfo(
+      requestId,
+      'FCM_RESIDENT_BROADCAST',
+      `pruned ${invalidTokens.length} unregistered resident token(s)`
+    );
+  }
+
+  return {
+    delivered: successCount > 0,
+    tokenCount: list.length,
+    successCount,
+    failureCount: failures.length,
+    failures,
+  };
 }
 
 /**
@@ -289,6 +453,10 @@ module.exports = {
   sendResidentReportNotification,
   ADMIN_CHANNEL_ID,
   ADMIN_CLICK_ACTION,
+  RESIDENT_CHANNEL_ID,
+  RESIDENT_CLICK_ACTION,
   findAllAdminFcmTokens,
+  findAllResidentFcmTokens,
   sendAdminNewReportNotification,
+  sendResidentAnnouncementNotification,
 };

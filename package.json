@@ -22,6 +22,7 @@
     "migrate:admin-fcm-token": "node migration/migrate-admin-fcm-token.js",
     "migrate:announcements": "node migration/migrate-announcements.js",
     "migrate:announcement-expiry": "node migration/migrate-announcement-expiry.js",
+    "migrate:announcement-notifications": "node migration/migrate-announcement-notifications.js",
     "migrate:resident-account-lifecycle": "node migration/migrate-resident-account-lifecycle.js",
     "verify:phase-3a": "node scripts/verify-phase-3a.js"
   },

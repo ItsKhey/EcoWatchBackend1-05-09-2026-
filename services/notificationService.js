@@ -1,6 +1,7 @@
 const notificationRepository = require('../repositories/notificationRepository');
 const reportRepository = require('../repositories/reportRepository');
 const adminRepository = require('../repositories/adminRepository');
+const residentRepository = require('../repositories/residentRepository');
 const fcmService = require('./fcmService');
 const { createHttpError } = require('../utils/personnelValidation');
 const { logError, logInfo } = require('../utils/logger');
@@ -14,10 +15,15 @@ const NOTIFICATION_TYPES = Object.freeze({
   REPORT_COMPLETED: 'REPORT_COMPLETED',
   // Phase 3A — admin-facing event created when a resident submits a report.
   NEW_REPORT: 'NEW_REPORT',
+  // Resident-facing event created when CENRO publishes an announcement.
+  ANNOUNCEMENT: 'ANNOUNCEMENT',
 });
 
 /** Event types that are delivered to administrators, not residents. */
 const ADMIN_EVENT_TYPES = Object.freeze([NOTIFICATION_TYPES.NEW_REPORT]);
+
+/** Event types that are broadcasts rather than events about one report. */
+const BROADCAST_EVENT_TYPES = Object.freeze([NOTIFICATION_TYPES.ANNOUNCEMENT]);
 
 const cleanText = (value, maxLength) =>
   String(value || '')
@@ -79,6 +85,28 @@ function isAdminEventType(type) {
   return ADMIN_EVENT_TYPES.includes(type);
 }
 
+/**
+ * Copy for a published announcement.
+ *
+ * <p>Kept separate from {@link eventContent} because that function is
+ * report-shaped: every branch it has interpolates a report id, and an
+ * announcement has no report. Building announcement copy by faking a report
+ * object would have put a bogus "Report ID: undefined" in front of every
+ * resident's notification.
+ *
+ * <p>The title is the announcement's own title so the notice is recognisable
+ * in the shade, and the body is the message trimmed to something a notification
+ * can actually show.
+ */
+const announcementContent = (announcement) => ({
+  title: cleanText(announcement.title, 80) || 'CENRO Announcement',
+  message: cleanText(announcement.message, 200),
+});
+
+function isBroadcastEventType(type) {
+  return BROADCAST_EVENT_TYPES.includes(type);
+}
+
 function normalizeEventType(value) {
   const type = String(value || '').trim().toUpperCase();
   if (!Object.values(NOTIFICATION_TYPES).includes(type)) {
@@ -112,7 +140,13 @@ function validateCreateEventRequest(body = {}) {
   if (!reportId || reportId.length > 100) {
     throw createHttpError(400, 'A valid reportId is required.');
   }
-  return { reportId, type: normalizeEventType(body.type) };
+  const type = normalizeEventType(body.type);
+  // Broadcasts are server-generated when CENRO publishes an announcement, so
+  // they must not be creatable by hand through the report-event route.
+  if (isBroadcastEventType(type)) {
+    throw createHttpError(400, 'type must be a supported server report event.');
+  }
+  return { reportId, type };
 }
 
 async function createForReportEvent({
@@ -122,6 +156,11 @@ async function createForReportEvent({
   requestId = null,
 }) {
   const type = normalizeEventType(rawType);
+  if (isBroadcastEventType(type)) {
+    // A broadcast is not a report event. Letting it through here would attach a
+    // broadcast notification to an unrelated report.
+    throw createHttpError(400, 'type must be a supported server report event.');
+  }
   const normalizedReportId = String(reportId || suppliedReport?.report_id || '').trim();
   if (!normalizedReportId || normalizedReportId.length > 100) {
     throw createHttpError(400, 'A valid reportId is required.');
@@ -259,13 +298,120 @@ async function createForAdminReportEvent({
   };
 }
 
+/**
+ * Creates one in-app notification per resident and pushes the announcement to
+ * their devices.
+ *
+ * <p>Each resident gets their own row so the announcement shows up in that
+ * resident's own Alerts list and can be marked read independently, which is the
+ * same reason the administrator broadcast writes a row per recipient.
+ *
+ * <p>Never throws for the push step: the announcement is already committed by
+ * the time this runs, so an FCM failure is logged and the Resident app's own
+ * REST sync reconciles the missing notification. Only a failure to read the
+ * resident list is surfaced to the caller, and even that is logged rather than
+ * thrown so publishing an announcement can never fail because of notifications.
+ */
+async function createForResidentAnnouncementEvent({
+  announcement,
+  requestId = null,
+}) {
+  const type = NOTIFICATION_TYPES.ANNOUNCEMENT;
+
+  if (!announcement || announcement.announcementId == null) {
+    throw createHttpError(400, 'A published announcement is required.');
+  }
+
+  const content = announcementContent(announcement);
+
+  let recipients;
+  try {
+    recipients = await residentRepository.findAllFcmTokens();
+  } catch (error) {
+    logError(
+      requestId,
+      'ANNOUNCEMENT_NOTIFICATION',
+      `Unable to read resident tokens for announcement ${announcement.announcementId}: ${error.message}`
+    );
+    return { type, recipients: [], push: { skipped: true, reason: 'TOKEN_LOOKUP_FAILED' } };
+  }
+
+  // A resident without a bound device still gets the in-app row, so the
+  // announcement still reaches them the next time they open the app.
+  const results = [];
+  const pushRecipients = [];
+
+  for (const recipient of recipients) {
+    try {
+      const notification = await notificationRepository.createNotification({
+        residentId: recipient.residentId,
+        // An announcement is not about a report, so the FK stays null.
+        reportId: null,
+        title: content.title,
+        message: content.message,
+        type,
+      });
+      results.push({ residentId: recipient.residentId, notification });
+      pushRecipients.push({
+        residentId: recipient.residentId,
+        token: recipient.token,
+        notificationId: notification.notification_id,
+      });
+    } catch (error) {
+      logError(
+        requestId,
+        'ANNOUNCEMENT_NOTIFICATION',
+        `Unable to persist ${type} for resident ${recipient.residentId}: ${error.message}`
+      );
+    }
+  }
+
+  let push = { skipped: true, reason: 'NOT_ATTEMPTED' };
+  try {
+    push = await fcmService.sendResidentAnnouncementNotification({
+      recipients: pushRecipients,
+      announcementId: announcement.announcementId,
+      type,
+      title: content.title,
+      message: content.message,
+      createdAt: results[0]?.notification?.created_at || new Date().toISOString(),
+      requestId,
+    });
+  } catch (error) {
+    logError(
+      requestId,
+      'FCM_RESIDENT_BROADCAST',
+      `Unable to broadcast ${type} for announcement ${announcement.announcementId}: ${error.message}`
+    );
+    push = { delivered: false, reason: 'SEND_FAILED' };
+  }
+
+  logInfo(
+    requestId,
+    'ANNOUNCEMENT',
+    `announcementId=${announcement.announcementId} recipients=${results.length} `
+    + `tokenCount=${push.tokenCount ?? pushRecipients.length} `
+    + `delivered=${push.successCount ?? 0} reason=${push.reason || 'SENT'}`
+  );
+
+  return {
+    type,
+    recipients: results.map((entry) => entry.residentId),
+    push,
+  };
+}
+
 module.exports = {
   NOTIFICATION_TYPES,
   ADMIN_EVENT_TYPES,
+  BROADCAST_EVENT_TYPES,
   createForReportEvent,
   createForAdminReportEvent,
+  createForResidentAnnouncementEvent,
   eventContent,
+  announcementContent,
   isAdminEventType,
+  isBroadcastEventType,
   normalizeEventType,
   validateCreateEventRequest,
 };

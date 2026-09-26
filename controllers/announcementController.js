@@ -1,12 +1,13 @@
 const announcementRepository = require('../repositories/announcementRepository');
 const residentRepository = require('../repositories/residentRepository');
+const notificationService = require('../services/notificationService');
 const {
   createHttpError,
   requireObject,
   normalizeText,
   normalizeMultilineText,
 } = require('../utils/personnelValidation');
-const { logInfo } = require('../utils/logger');
+const { logInfo, logError } = require('../utils/logger');
 
 /**
  * Audiences the client is allowed to ask for.
@@ -168,7 +169,29 @@ const createAnnouncement = async (req, res, next) => {
         : ', no expiry')
     );
 
-    res.status(201).json({ success: true, announcement });
+    // Notify residents only after the announcement is committed. A notification
+    // or push failure is logged and reconciled by the Resident app's own REST
+    // sync, so a flaky FCM connection can never fail a publish the
+    // administrator already saw accepted.
+    let notification = null;
+    try {
+      notification = await notificationService.createForResidentAnnouncementEvent({
+        announcement,
+        requestId: req.requestId,
+      });
+    } catch (error) {
+      logError(
+        req.requestId,
+        'ANNOUNCEMENT_NOTIFICATION',
+        `Announcement ${announcement.announcementId} was published but notifying residents failed: ${error.message}`
+      );
+    }
+
+    res.status(201).json({
+      success: true,
+      announcement,
+      notifiedResidents: notification?.recipients?.length ?? 0,
+    });
   } catch (error) {
     next(error);
   }
