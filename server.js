@@ -48,6 +48,7 @@ app.use('/api/history', require('./routes/historyRoutes'));
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/personnel', require('./routes/personnelRoutes'));
+app.use('/api/announcements', require('./routes/announcementRoutes'));
 
 app.use(notFound);
 app.use(errorHandler);
