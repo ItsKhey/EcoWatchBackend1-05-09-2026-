@@ -4,7 +4,7 @@ const trashReportRepository = require('../repositories/trashReportRepository');
 const historyRepository = require('../repositories/historyRepository');
 const personnelRepository = require('../repositories/personnelRepository');
 const { generateReportId } = require('../utils/generateId');
-const { uploadImage } = require('../services/cloudinaryService');
+const { uploadImage, destroyImage } = require('../services/cloudinaryService');
 const {
   releaseReportAssignment,
 } = require('../services/reportAssignmentService');
@@ -519,10 +519,77 @@ const bulkDeleteReports = async (req, res, next) => {
   }
 };
 
+/**
+ * Resident-editable report fields, in the order they are reported back in the
+ * "Updated" history entry.
+ */
+const RESIDENT_EDITABLE_FIELDS = Object.freeze([
+  ['image', 'report photo'],
+  ['title', 'report title'],
+  ['category', 'waste type'],
+  ['location', 'location'],
+  ['description', 'description'],
+]);
+
+/** "photo" -> "photo and title"; used for a single grouped history entry. */
+const joinEditFieldLabels = (labels) => {
+  if (labels.length <= 1) return labels[0] || '';
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+};
+
+/** Builds the grouped audit line, e.g. "Updated report photo and location." */
+const describeResidentEdit = (changedFields) => {
+  const labels = changedFields
+    .map((field) => (RESIDENT_EDITABLE_FIELDS.find(([key]) => key === field) || [])[1])
+    .filter(Boolean);
+  if (!labels.length) return null;
+  return `Updated ${joinEditFieldLabels(labels)}.`;
+};
+
+const isPresent = (value) => value !== undefined && value !== null;
+
+/** True when the client sent at least one of the accepted aliases. */
+const wasSent = (body, keys) => keys.some((key) => isPresent(body[key]));
+
+/** Reads the first alias actually present, trimmed. */
+const readTextField = (body, keys) => {
+  for (const key of keys) {
+    if (isPresent(body[key])) return String(body[key]).trim();
+  }
+  return null;
+};
+
+/**
+ * Reads a coordinate, ignoring blank values so an omitted key keeps the stored
+ * position while a real number replaces it.
+ */
+const readCoordinateField = (body, keys, fallback) => {
+  for (const key of keys) {
+    const raw = body[key];
+    if (!isPresent(raw) || String(raw).trim() === '') continue;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+};
+
+const sameText = (left, right) =>
+  String(left === null || left === undefined ? '' : left).trim()
+    === String(right === null || right === undefined ? '' : right).trim();
+
+/**
+ * @desc    Update a report the authenticated resident owns
+ * @route   PATCH /api/reports/:id
+ * @access  Private
+ *
+ * Writes only the resident-editable fields (photo, title, waste type, location
+ * and description) plus updated_at. report_id, resident_id and created_at are
+ * never touched, and every applied change is recorded as a single grouped
+ * "UPDATED" history entry written by the real backend.
+ */
 const updateReport = async (req, res, next) => {
-  const { title, description, latitude, longitude } = req.body;
-  const category = req.body.category || req.body.waste_type || req.body.wasteType;
   const residentId = req.resident.residentId || req.resident.resident_id;
+  const body = req.body || {};
 
   try {
     const forbiddenAdminFields = [
@@ -533,7 +600,7 @@ const updateReport = async (req, res, next) => {
       'assigned_personnel_id',
       'assignedPersonnelIds',
       'assigned_personnel_ids',
-    ].filter((field) => Object.prototype.hasOwnProperty.call(req.body || {}, field));
+    ].filter((field) => Object.prototype.hasOwnProperty.call(body, field));
     if (forbiddenAdminFields.length) {
       const error = new Error(
         `Report status and response are administrator-owned; remove: ${forbiddenAdminFields.join(', ')}.`
@@ -548,25 +615,134 @@ const updateReport = async (req, res, next) => {
       throw new Error('Report not found');
     }
 
-    let imageUrl = report.image_url;
-    if (req.file) {
-      const result = await uploadImage(req.file.buffer, 'ecowatch/reports');
-      imageUrl = result.secure_url;
+    const updates = {};
+    const changedFields = new Set();
+
+    if (wasSent(body, ['title'])) {
+      const title = readTextField(body, ['title']);
+      if (!title) {
+        res.status(400);
+        throw new Error('Report title is required');
+      }
+      if (!sameText(report.title, title)) {
+        updates.title = title;
+        changedFields.add('title');
+      }
     }
 
-    const updates = {
-      title: title || report.title,
-      category: category || report.category,
-      description: description || report.description,
-      latitude: latitude !== undefined && latitude !== '' ? latitude : report.latitude,
-      longitude: longitude !== undefined && longitude !== '' ? longitude : report.longitude,
-      imageUrl,
-    };
+    if (wasSent(body, ['category', 'waste_type', 'wasteType'])) {
+      const category = readTextField(body, ['category', 'waste_type', 'wasteType']);
+      if (!category) {
+        res.status(400);
+        throw new Error('Report category is required');
+      }
+      if (!sameText(report.category, category)) {
+        updates.category = category;
+        changedFields.add('category');
+      }
+    }
 
+    // The description is intentionally clearable: an empty submission is a
+    // deliberate "no description" rather than "field not provided".
+    if (wasSent(body, ['description'])) {
+      const description = readTextField(body, ['description']) || '';
+      if (!sameText(report.description, description)) {
+        updates.description = description;
+        changedFields.add('description');
+      }
+    }
+
+    const latitude = readCoordinateField(body, ['latitude'], report.latitude);
+    const longitude = readCoordinateField(body, ['longitude'], report.longitude);
+    const currentLatitude = report.latitude === null || report.latitude === undefined
+      ? report.latitude
+      : Number(report.latitude);
+    const currentLongitude = report.longitude === null || report.longitude === undefined
+      ? report.longitude
+      : Number(report.longitude);
+    if (latitude !== currentLatitude || longitude !== currentLongitude) {
+      updates.latitude = latitude;
+      updates.longitude = longitude;
+      changedFields.add('location');
+    }
+
+    // Upload before the row is written so a failed upload can never leave the
+    // report pointing at an image that does not exist.
+    let replacementImageUrl = null;
+    if (req.file) {
+      const uploaded = await uploadImage(req.file.buffer, 'ecowatch/reports');
+      replacementImageUrl = uploaded.secure_url || null;
+      if (replacementImageUrl && replacementImageUrl !== report.image_url) {
+        updates.imageUrl = replacementImageUrl;
+        changedFields.add('image');
+      }
+    }
+
+    const orderedChangedFields = RESIDENT_EDITABLE_FIELDS
+      .map(([key]) => key)
+      .filter((key) => changedFields.has(key));
+
+    if (orderedChangedFields.length === 0) {
+      // Nothing actually changed, so leave updated_at and the audit trail
+      // untouched instead of recording a no-op edit.
+      return res.json({
+        ...normalizeReport(report),
+        changedFields: [],
+      });
+    }
+
+    // updateReport only writes the columns present in `updates` and always
+    // refreshes updated_at, so report_id, resident_id and created_at are
+    // preserved by construction.
     const updatedReport = await reportRepository.updateReport(report.report_id, updates);
-    res.json(normalizeReport(updatedReport));
+    if (!updatedReport) {
+      res.status(404);
+      throw new Error('Report not found');
+    }
+
+    logInfo(
+      req.requestId,
+      'REPORT',
+      `Report ${report.report_id} edited by resident ${residentId}: ${orderedChangedFields.join(', ')}`
+    );
+
+    // The row is committed and already references the replacement asset, so
+    // removing the previous photo is a best-effort cleanup only.
+    if (replacementImageUrl && report.image_url && report.image_url !== replacementImageUrl) {
+      await destroyImage(report.image_url);
+    }
+
+    // oldStatus/newStatus stay null: an edit is not a status transition, and
+    // recording the status here would double-count the report in the
+    // Completed/Denied history filters.
+    const historyLogged = await logHistory({
+      residentId: report.resident_id,
+      reportId: report.report_id,
+      action: 'UPDATED',
+      oldStatus: null,
+      newStatus: null,
+      description: describeResidentEdit(orderedChangedFields),
+      timestamp: new Date(),
+    });
+    if (!historyLogged) {
+      logError(
+        req.requestId,
+        'REPORT',
+        `Report ${report.report_id} was updated but the edit history could not be written`
+      );
+    }
+
+    return res.json({
+      ...normalizeReport(updatedReport),
+      changedFields: orderedChangedFields,
+    });
   } catch (error) {
-    next(error);
+    logError(
+      req.requestId,
+      'REPORT_UPDATE',
+      `edit failed status=${res.statusCode} code=${error.code || error.name || 'Error'} message=${error.message}`
+    );
+    return next(error);
   }
 };
 
