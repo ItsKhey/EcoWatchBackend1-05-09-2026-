@@ -3,6 +3,9 @@ const archivedReportRepository = require('../repositories/archivedReportReposito
 const trashReportRepository = require('../repositories/trashReportRepository');
 const historyRepository = require('../repositories/historyRepository');
 const personnelRepository = require('../repositories/personnelRepository');
+const clusterRepository = require('../repositories/clusterRepository');
+const reportPhotoRepository = require('../repositories/reportPhotoRepository');
+const { withTransaction } = require('../config/db');
 const { generateReportId } = require('../utils/generateId');
 const { uploadImage, destroyImage } = require('../services/cloudinaryService');
 const {
@@ -37,6 +40,7 @@ const normalizeReport = (report, sourceCollection = 'reports') => {
     latitude: report.latitude,
     longitude: report.longitude,
     imageUrl: report.image_url,
+    clusterId: report.cluster_id || null,
     status: report.status,
     adminResponse: report.admin_response || '',
     assignedPersonnelIds: normalizeAssignedPersonnelIds(report.assigned_personnel_ids),
@@ -149,6 +153,79 @@ const reportInput = (report, overrides = {}) => ({
 });
 
 const CLIENT_REPORT_ID_PATTERN = /^REP-[A-Z0-9]{8,32}$/i;
+const CLUSTER_RADIUS_METERS = 10;
+const ACTIVE_CLUSTER_STATUSES = ['Pending', 'In Progress'];
+const DOUBLE_TAP_WINDOW_MS = 5000; // 5 seconds
+
+/**
+ * In-memory submission fingerprint store for double-tap protection.
+ * Maps residentId -> { fingerprint, timestamp }
+ * Entries expire after DOUBLE_TAP_WINDOW_MS.
+ */
+const submissionFingerprints = new Map();
+
+/**
+ * Cleans up expired entries from the fingerprint store.
+ */
+const cleanupExpiredFingerprints = () => {
+  const now = Date.now();
+  for (const [key, value] of submissionFingerprints.entries()) {
+    if (now - value.timestamp > DOUBLE_TAP_WINDOW_MS) {
+      submissionFingerprints.delete(key);
+    }
+  }
+};
+
+/**
+ * Creates a submission fingerprint from resident ID and coordinates.
+ * Returns null if coordinates are missing.
+ */
+const createSubmissionFingerprint = (residentId, latitude, longitude) => {
+  if (latitude === undefined || longitude === undefined) return null;
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+  // Round to 5 decimal places (~1 meter precision) for fingerprint stability
+  const latRounded = Math.round(lat * 100000) / 100000;
+  const lngRounded = Math.round(lng * 100000) / 100000;
+  return `${residentId}:${latRounded}:${lngRounded}`;
+};
+
+/**
+ * Checks if this is a duplicate submission within the cooldown window.
+ * Returns true if duplicate, false if allowed.
+ */
+const isDuplicateSubmission = (fingerprint) => {
+  if (!fingerprint) return false;
+  cleanupExpiredFingerprints();
+  const existing = submissionFingerprints.get(fingerprint);
+  if (!existing) return false;
+  return (Date.now() - existing.timestamp) < DOUBLE_TAP_WINDOW_MS;
+};
+
+/**
+ * Records a submission fingerprint.
+ */
+const recordSubmission = (fingerprint) => {
+  if (!fingerprint) return;
+  submissionFingerprints.set(fingerprint, {
+    fingerprint,
+    timestamp: Date.now(),
+  });
+};
+
+/**
+ * Uploads multiple photo buffers to Cloudinary sequentially, preserving order.
+ * Returns an array of secure URLs.
+ */
+const uploadPhotosInOrder = async (files) => {
+  const urls = [];
+  for (const file of files) {
+    const result = await uploadImage(file.buffer, 'ecowatch/reports');
+    urls.push(result.secure_url);
+  }
+  return urls;
+};
 
 const createReport = async (req, res, next) => {
   const { title, description, latitude, longitude } = req.body;
@@ -159,6 +236,11 @@ const createReport = async (req, res, next) => {
   const clientReportId = CLIENT_REPORT_ID_PATTERN.test(requestedReportId)
     ? requestedReportId
     : null;
+  const continueInCluster = req.body.continue_in_cluster === true
+    || req.body.continue_in_cluster === 'true';
+
+  // Support both single (legacy) and multiple photo uploads
+  const files = req.files || (req.file ? [req.file] : []);
 
   try {
     const residentId = req.resident.residentId || req.resident.resident_id;
@@ -180,12 +262,12 @@ const createReport = async (req, res, next) => {
       res.status(400);
       throw new Error('Report category is required');
     }
-    if (!req.file) {
+    if (files.length === 0) {
       res.status(400);
-      throw new Error('Please upload an image');
+      throw new Error('Please upload at least one photo');
     }
 
-    // A client retry may reuse its provisional report ID.  Check for an
+    // A client retry may reuse its provisional report ID. Check for an
     // already-created report before uploading another image so an ambiguous
     // network failure cannot create duplicate production reports.
     if (clientReportId) {
@@ -208,21 +290,111 @@ const createReport = async (req, res, next) => {
       }
     }
 
-    logInfo(req.requestId, 'REPORT', `Report fields received: clientReportId=${clientReportId || 'none'} imageBytes=${req.file.size} imageType=${req.file.mimetype}`);
+    const hasCoordinates = latitude !== undefined && latitude !== ''
+      && longitude !== undefined && longitude !== ''
+      && !Number.isNaN(Number(latitude)) && !Number.isNaN(Number(longitude));
 
-    const result = await uploadImage(req.file.buffer, 'ecowatch/reports');
-    const report = await reportRepository.createReport({
-      reportId: clientReportId || generateReportId(),
-      residentId,
-      title,
-      category,
-      description,
-      latitude: latitude !== undefined && latitude !== '' ? latitude : null,
-      longitude: longitude !== undefined && longitude !== '' ? longitude : null,
-      imageUrl: result.secure_url,
+    // Double-tap protection: check for duplicate submission within cooldown window
+    const fingerprint = createSubmissionFingerprint(residentId, latitude, longitude);
+    if (isDuplicateSubmission(fingerprint)) {
+      logInfo(req.requestId, 'REPORT', `Duplicate submission blocked for resident: ${residentId}`);
+      return res.status(429).json({
+        status: 'duplicate_submission',
+        message: 'Your previous submission is still being processed.',
+      });
+    }
+
+    // Check for nearby active cluster when coordinates are present
+    let nearbyCluster = null;
+    if (hasCoordinates) {
+      nearbyCluster = await clusterRepository.getNearbyClusterWithPreview(
+        Number(latitude),
+        Number(longitude),
+        CLUSTER_RADIUS_METERS
+      );
+
+      // If a nearby cluster exists and the resident hasn't confirmed they want
+      // to continue, return the cluster info so the app can show a dialog.
+      if (nearbyCluster && !continueInCluster) {
+        logInfo(req.requestId, 'CLUSTER', `Nearby cluster found: ${nearbyCluster.clusterId} at ${nearbyCluster.distance}m`);
+        return res.status(200).json({
+          status: 'existing_cluster',
+          clusterId: nearbyCluster.clusterId,
+          distance: nearbyCluster.distance,
+          clusterStatus: nearbyCluster.status,
+          reportCount: nearbyCluster.reportCount,
+          spotCount: nearbyCluster.spotCount,
+          previewPhoto: nearbyCluster.previewPhoto,
+          previewReportId: nearbyCluster.previewReportId,
+          lastActivityAt: nearbyCluster.lastActivityAt,
+        });
+      }
+    }
+
+    logInfo(req.requestId, 'REPORT', `Report fields received: clientReportId=${clientReportId || 'none'} photoCount=${files.length} clusterId=${nearbyCluster?.clusterId || 'none'}`);
+
+    // Upload all photos to Cloudinary
+    const photoUrls = await uploadPhotosInOrder(files);
+
+    // Use existing cluster or create a new one
+    let clusterId = nearbyCluster?.clusterId || null;
+    let isNewCluster = false;
+
+    const report = await withTransaction(async (client) => {
+      // Double-check for existing cluster inside the transaction (race condition protection)
+      if (hasCoordinates && !clusterId) {
+        const existingCluster = await clusterRepository.findNearbyActiveCluster(
+          Number(latitude),
+          Number(longitude),
+          CLUSTER_RADIUS_METERS,
+          client
+        );
+        if (existingCluster) {
+          clusterId = existingCluster.clusterId;
+        }
+      }
+
+      // Create new cluster if none exists
+      if (!clusterId && hasCoordinates) {
+        const newCluster = await clusterRepository.createCluster(
+          Number(latitude),
+          Number(longitude),
+          client
+        );
+        clusterId = newCluster.cluster_id;
+        isNewCluster = true;
+      }
+
+      // Create the report
+      const newReport = await reportRepository.createReport({
+        reportId: clientReportId || generateReportId(),
+        residentId,
+        title,
+        category,
+        description,
+        latitude: hasCoordinates ? Number(latitude) : null,
+        longitude: hasCoordinates ? Number(longitude) : null,
+        imageUrl: photoUrls[0] || null,
+        clusterId,
+      }, client);
+
+      // Create photo records for all uploaded photos
+      if (photoUrls.length > 0) {
+        await reportPhotoRepository.createPhotos(newReport.report_id, photoUrls, client);
+      }
+
+      // Update cluster activity timestamp
+      if (clusterId) {
+        await clusterRepository.touchClusterActivity(clusterId, client);
+      }
+
+      return newReport;
     });
 
-    logInfo(req.requestId, 'DATABASE', `Report created: ${report.report_id}`);
+    // Record submission fingerprint after successful creation (outside transaction)
+    recordSubmission(fingerprint);
+
+    logInfo(req.requestId, 'DATABASE', `Report created: ${report.report_id} in cluster: ${clusterId || 'none'}`);
     const historyLogged = await logHistory({
       residentId: report.resident_id,
       reportId: report.report_id,
@@ -251,7 +423,14 @@ const createReport = async (req, res, next) => {
       );
     }
 
-    return res.status(201).json(normalizeReport(report));
+    const responseStatus = isNewCluster ? 'new_cluster' : 'report_created';
+
+    return res.status(201).json({
+      status: responseStatus,
+      clusterId,
+      reportId: report.report_id,
+      ...normalizeReport(report),
+    });
   } catch (error) {
     logError(req.requestId, 'REPORT_CREATE', `submission failed status=${res.statusCode} code=${error.code || error.name || 'Error'} message=${error.message}`);
     return next(error);
@@ -747,6 +926,78 @@ const updateReport = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/reports/nearby-clusters
+ * Returns active clusters near the given coordinates.
+ * Used by the resident app to preview nearby waste areas before submitting.
+ */
+const getNearbyClusters = async (req, res, next) => {
+  try {
+    const { latitude, longitude, radius } = req.query;
+
+    if (latitude === undefined || longitude === undefined) {
+      res.status(400);
+      throw new Error('Both latitude and longitude query parameters are required');
+    }
+
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
+      res.status(400);
+      throw new Error('Latitude and longitude must be valid numbers');
+    }
+
+    const radiusMeters = radius !== undefined ? Number(radius) : CLUSTER_RADIUS_METERS;
+    if (Number.isNaN(radiusMeters) || radiusMeters <= 0) {
+      res.status(400);
+      throw new Error('Radius must be a positive number');
+    }
+
+    const clusters = await clusterRepository.findNearbyActiveClusters(lat, lng, radiusMeters);
+
+    // Batch-fetch preview info for all clusters
+    const clusterIds = clusters.map((c) => c.clusterId);
+    const previewInfoMap = await clusterRepository.getClustersPreviewInfo(clusterIds);
+
+    // Enrich each cluster with report count, spotCount, preview info, and activity
+    const enrichedClusters = await Promise.all(
+      clusters.map(async (cluster) => {
+        const full = await clusterRepository.getClusterById(cluster.clusterId);
+        const previewInfo = previewInfoMap[cluster.clusterId] || {};
+        return {
+          clusterId: cluster.clusterId,
+          distance: cluster.distance,
+          clusterStatus: cluster.status,
+          reportCount: full?.reportCount || 0,
+          spotCount: full?.spotCount || full?.reportCount || 0,
+          previewPhoto: previewInfo.previewPhoto || null,
+          previewReportId: previewInfo.previewReportId || null,
+          lastActivityAt: full?.lastActivityAt || cluster.lastActivityAt,
+        };
+      })
+    );
+
+    res.json({
+      clusters: enrichedClusters,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Helper: gets the most recent report ID in a cluster for preview purposes.
+ */
+const getFirstReportIdInCluster = async (clusterId) => {
+  const { pool } = require('../config/db');
+  const result = await pool.query(
+    'SELECT report_id FROM reports WHERE cluster_id = $1 AND is_deleted = false AND is_archived = false ORDER BY created_at DESC LIMIT 1',
+    [clusterId]
+  );
+  return result.rows[0]?.report_id || null;
+};
+
 const deleteReport = async (req, res, next) => {
   try {
     const found = await findReportInAnyCollection(req.params.id, req.resident.residentId);
@@ -783,6 +1034,7 @@ const deleteReport = async (req, res, next) => {
 module.exports = {
   createReport,
   getMyReports,
+  getNearbyClusters,
   updateReport,
   deleteReport,
   softDeleteReport,

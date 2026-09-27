@@ -203,6 +203,7 @@ const ADMIN_REPORT_UNION = `
       r.latitude,
       r.longitude,
       r.image_url,
+      r.cluster_id,
       r.status,
       r.admin_response,
       r.assigned_personnel_ids,
@@ -246,6 +247,7 @@ const ADMIN_REPORT_UNION = `
       a.latitude,
       a.longitude,
       a.image_url,
+      a.cluster_id,
       a.status,
       a.admin_response,
       a.assigned_personnel_ids,
@@ -275,6 +277,7 @@ const ADMIN_REPORT_UNION = `
       latitude,
       longitude,
       image_url,
+      cluster_id,
       status,
       admin_response,
       assigned_personnel_ids,
@@ -308,6 +311,7 @@ const RESIDENT_REPORT_UNION = `
       latitude,
       longitude,
       image_url,
+      cluster_id,
       status,
       admin_response,
       assigned_personnel_ids,
@@ -351,6 +355,7 @@ const RESIDENT_REPORT_UNION = `
       latitude,
       longitude,
       image_url,
+      cluster_id,
       status,
       admin_response,
       assigned_personnel_ids,
@@ -380,6 +385,7 @@ const RESIDENT_REPORT_UNION = `
       latitude,
       longitude,
       image_url,
+      cluster_id,
       status,
       admin_response,
       assigned_personnel_ids,
@@ -547,6 +553,7 @@ async function createReport({
   latitude = null,
   longitude = null,
   imageUrl = null,
+  clusterId = null,
   status = 'Pending',
   adminResponse = '',
   assignedPersonnelIds = [],
@@ -573,6 +580,7 @@ async function createReport({
       latitude,
       longitude,
       image_url,
+      cluster_id,
       status,
       admin_response,
       assigned_personnel_ids,
@@ -592,8 +600,8 @@ async function createReport({
       $1, $2, $3, $4, $5,
       $6, $7, $8, $9, $10,
       $11, $12, $13, $14, $15,
-      $16, $17, $18, $19,
-      $20, $21, $22
+      $16, $17, $18, $19, $20,
+      $21, $22, $23
     )
     RETURNING *
     `,
@@ -606,6 +614,7 @@ async function createReport({
       latitude,
       longitude,
       imageUrl,
+      clusterId,
       status,
       adminResponse,
       assignedPersonnelIds,
@@ -648,6 +657,7 @@ async function updateReport(reportId, updates, queryable = pool) {
     handledById: 'handled_by_id',
     resolutionImageUrl: 'resolution_image_url',
     resolvedAt: 'resolved_at',
+    clusterId: 'cluster_id',
   };
 
   const setParts = [];

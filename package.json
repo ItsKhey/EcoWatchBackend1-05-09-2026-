@@ -27,6 +27,8 @@
     "migrate:notification-preferences-followup": "node migration/migrate-notification-preferences-followup.js",
     "verify:announcements": "node scripts/verify-announcements.js",
     "migrate:resident-account-lifecycle": "node migration/migrate-resident-account-lifecycle.js",
+    "migrate:report-clusters": "node migration/migrate-report-clusters.js",
+    "migrate:cluster-activity": "node migration/migrate-cluster-activity.js",
     "verify:phase-3a": "node scripts/verify-phase-3a.js"
   },
   "keywords": [],
