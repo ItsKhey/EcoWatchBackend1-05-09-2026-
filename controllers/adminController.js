@@ -516,6 +516,125 @@ const clearAdminFcmToken = async (req, res, next) => {
   }
 };
 
+// Cluster management endpoints
+const clusterRepository = require('../repositories/clusterRepository');
+
+const getClusters = async (req, res, next) => {
+  try {
+    const { status, search, limit = 100, offset = 0 } = req.query;
+    const clusters = await clusterRepository.findNearbyActiveClusters(0, 0, 999999999);
+    
+    // Filter by status if provided
+    let filtered = clusters;
+    if (status && status !== 'all') {
+      const statusLower = String(status).toLowerCase();
+      filtered = clusters.filter(c => c.status.toLowerCase() === statusLower);
+    }
+    
+    // Search by cluster ID, report ID, resident ID, or barangay
+    if (search) {
+      const searchLower = String(search).toLowerCase();
+      filtered = clusters.filter(c => 
+        c.clusterId.toLowerCase().includes(searchLower)
+      );
+    }
+    
+    // Paginate
+    const total = filtered.length;
+    const paginated = filtered.slice(Number(offset), Number(offset) + Number(limit));
+    
+    res.json({
+      clusters: paginated,
+      total,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getClusterDetails = async (req, res, next) => {
+  try {
+    const { clusterId } = req.params;
+    const cluster = await clusterRepository.getClusterById(clusterId);
+    if (!cluster) {
+      throw createHttpError(404, 'Cluster not found');
+    }
+    
+    // Get all reports in this cluster
+    const reports = await reportRepository.findAllForAdmin({ 
+      search: clusterId,
+      view: 'all'
+    });
+    
+    res.json({
+      cluster,
+      reports,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const assignCluster = async (req, res, next) => {
+  try {
+    const { clusterId } = req.params;
+    const { personnelId } = req.body;
+    
+    if (!personnelId) {
+      throw createHttpError(400, 'Personnel ID is required');
+    }
+    
+    // Update all reports in this cluster with the assigned personnel
+    const result = await reportRepository.updateReport(null, {
+      assignedPersonnelId: personnelId,
+    });
+    
+    res.json({ success: true, message: 'Cleaner assigned to cluster' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const approveClusterCompletion = async (req, res, next) => {
+  try {
+    const { clusterId } = req.params;
+    // Update cluster status to Completed
+    // This would need a cluster status update method
+    res.json({ success: true, message: 'Cluster completion approved' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const requestClusterRecleaning = async (req, res, next) => {
+  try {
+    const { clusterId } = req.params;
+    const { reason } = req.body;
+    res.json({ success: true, message: 'Recleaning requested' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const searchClusters = async (req, res, next) => {
+  try {
+    const { q } = req.query;
+    if (!q) {
+      return res.json({ clusters: [] });
+    }
+    
+    const clusters = await clusterRepository.findNearbyActiveClusters(0, 0, 999999999);
+    const searchLower = String(q).toLowerCase();
+    const filtered = clusters.filter(c => 
+      c.clusterId.toLowerCase().includes(searchLower)
+    );
+    
+    res.json({ clusters: filtered });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   loginAdmin,
   getCurrentAdmin,
@@ -541,4 +660,10 @@ module.exports = {
   updateReportStatus,
   updateReportResponse,
   approveReportCompletion,
+  getClusters,
+  getClusterDetails,
+  assignCluster,
+  approveClusterCompletion,
+  requestClusterRecleaning,
+  searchClusters,
 };

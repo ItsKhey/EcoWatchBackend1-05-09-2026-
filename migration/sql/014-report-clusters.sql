@@ -23,6 +23,12 @@ BEGIN
   ) THEN
     ALTER TABLE reports ADD COLUMN cluster_id TEXT;
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'archived_reports' AND column_name = 'cluster_id'
+  ) THEN
+    ALTER TABLE archived_reports ADD COLUMN cluster_id TEXT;
+  END IF;
 END $$;
 
 -- Index for cluster-based lookups

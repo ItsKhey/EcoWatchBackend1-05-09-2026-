@@ -24,6 +24,12 @@ const {
   updateReportStatus,
   updateReportResponse,
   approveReportCompletion,
+  getClusters,
+  getClusterDetails,
+  assignCluster,
+  approveClusterCompletion,
+  requestClusterRecleaning,
+  searchClusters,
 } = require('../controllers/adminController');
 const {
   getPersonnelDetails,
@@ -102,5 +108,13 @@ router.delete('/personnel/:id', deletePersonnel);
 
 // Preserve the original create-personnel alias during rolling deployments.
 router.post('/create-personnel', createPersonnel);
+
+// Cluster management endpoints
+router.get('/clusters', getClusters);
+router.get('/clusters/search', searchClusters);
+router.get('/clusters/:clusterId', getClusterDetails);
+router.post('/clusters/:clusterId/assign', assignCluster);
+router.post('/clusters/:clusterId/approve-completion', approveClusterCompletion);
+router.post('/clusters/:clusterId/request-recleaning', requestClusterRecleaning);
 
 module.exports = router;
