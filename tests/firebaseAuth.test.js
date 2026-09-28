@@ -283,8 +283,7 @@ test('ActionCodeSettings hand control to the app and pin the Android package', (
   assert.equal(DEFAULT_ANDROID_PACKAGE, 'com.example.myecowatch1');
 });
 
-test('the continue URL host matches the App Link the app declares', () => {
-  const fs = require('fs');
+test('the continue URL host matches the App Link the app declares', () => {  const fs = require('fs');
   const path = require('path');
   const { DEFAULT_CONTINUE_URL } = require('../services/firebaseAuthService');
 

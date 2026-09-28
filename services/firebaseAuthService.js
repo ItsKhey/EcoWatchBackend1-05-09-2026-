@@ -95,6 +95,30 @@ function assertConfigured() {
 }
 
 /**
+ * Turns an email delivery failure into a logged, tagged error.
+ *
+ * services/emailServices.js has already classified the failure and attached the
+ * operator-facing reason as operatorHint. That hint is written to the server log
+ * because it is the only place the fix belongs: the resident is told delivery is
+ * unavailable, while whoever runs the deployment finds out that EMAIL_FROM is
+ * the provider's testing sender.
+ */
+const reportDeliveryFailure = ({ error, requestId, label, recipient }) => {
+  const code = String(error?.code || 'EMAIL_DELIVERY_FAILED');
+  const hint = error?.operatorHint || error?.message || 'no detail from the provider';
+
+  logError(requestId, 'EMAIL_DELIVERY', `${label} to ${recipient} failed [${code}]`);
+  logError(requestId, 'EMAIL_CONFIG', hint);
+
+  return createFirebaseError(
+    'We could not send the email. Email delivery is not configured for this '
+      + 'address yet. Please contact your administrator.',
+    502,
+    code
+  );
+};
+
+/**
  * Creates an unverified Firebase identity for a new registration.
  *
  * The identity is created unverified on purpose. Firebase owns the email
@@ -158,16 +182,12 @@ async function sendVerificationLink({ email, username, requestId }) {
   try {
     await sendFirebaseVerificationLink(email, link, username);
   } catch (error) {
-    logError(
+    throw reportDeliveryFailure({
+      error,
       requestId,
-      'FIREBASE_AUTH',
-      `verification link delivery failed for email=${email}: ${error.message}`
-    );
-    const deliveryError = new Error(
-      'We could not send the verification email. Please try again.'
-    );
-    deliveryError.statusCode = 500;
-    throw deliveryError;
+      label: 'verification link',
+      recipient: email,
+    });
   }
 
   logInfo(requestId, 'FIREBASE_AUTH', `verification link issued for email=${email}`);
@@ -216,16 +236,12 @@ async function sendPasswordResetLink({ email, username, requestId }) {
   try {
     await sendFirebasePasswordResetLink(email, link, username);
   } catch (error) {
-    logError(
+    throw reportDeliveryFailure({
+      error,
       requestId,
-      'FIREBASE_AUTH',
-      `password reset link delivery failed for email=${email}: ${error.message}`
-    );
-    const deliveryError = new Error(
-      'We could not send the password reset email. Please try again.'
-    );
-    deliveryError.statusCode = 500;
-    throw deliveryError;
+      label: 'password reset link',
+      recipient: email,
+    });
   }
 
   logInfo(requestId, 'FIREBASE_AUTH', `password reset link issued for email=${email}`);
