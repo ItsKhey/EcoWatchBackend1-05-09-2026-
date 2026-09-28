@@ -61,6 +61,51 @@ const normalizeReport = (report, sourceCollection = 'reports') => {
   };
 };
 
+/**
+ * Adds the per-report photo list to normalized reports.
+ *
+ * <p>The `imageUrl` field is only the cover photo, so a multi-photo report
+ * cannot be fully rendered from it. This resolves the `report_photos` rows in
+ * one batched query and exposes them as `photos`, which always leads with the
+ * cover image so ordering and the single-photo case stay consistent.
+ *
+ * <p>A failure to read the photo rows must never fail the report itself, so any
+ * error degrades to the cover image only.
+ */
+const attachPhotoLists = async (normalizedReports) => {
+  const reports = Array.isArray(normalizedReports) ? normalizedReports : [normalizedReports];
+
+  let photosByReportId = new Map();
+  try {
+    const rows = await reportPhotoRepository.findPhotosByReportIds(
+      reports.map((report) => report?.reportId)
+    );
+    photosByReportId = rows.reduce((grouped, row) => {
+      if (!row || !row.report_id || !row.image_url) return grouped;
+      const existing = grouped.get(row.report_id) || [];
+      existing.push(row.image_url);
+      grouped.set(row.report_id, existing);
+      return grouped;
+    }, new Map());
+  } catch (error) {
+    logError(null, 'REPORT_PHOTO', `Could not load report photos: ${error.message}`);
+  }
+
+  for (const report of reports) {
+    if (!report) continue;
+    const photos = (photosByReportId.get(report.reportId) || []).slice();
+    // The cover image is the canonical first photo. Leading with it keeps a
+    // single-photo report rendering identically and stops a re-uploaded cover
+    // from duplicating an entry.
+    if (report.imageUrl && !photos.includes(report.imageUrl)) {
+      photos.unshift(report.imageUrl);
+    }
+    report.photos = photos;
+  }
+
+  return Array.isArray(normalizedReports) ? normalizedReports : normalizedReports;
+};
+
 const logHistory = async (data) => {
   try {
     await historyRepository.createHistory(data);
@@ -425,11 +470,13 @@ const createReport = async (req, res, next) => {
 
     const responseStatus = isNewCluster ? 'new_cluster' : 'report_created';
 
+    const [createdReport] = await attachPhotoLists([normalizeReport(report)]);
+
     return res.status(201).json({
       status: responseStatus,
       clusterId,
       reportId: report.report_id,
-      ...normalizeReport(report),
+      ...createdReport,
     });
   } catch (error) {
     logError(req.requestId, 'REPORT_CREATE', `submission failed status=${res.statusCode} code=${error.code || error.name || 'Error'} message=${error.message}`);
@@ -446,13 +493,15 @@ const getMyReports = async (req, res, next) => {
       trashReportRepository.findByResidentId(residentId),
     ]);
 
-    const normalizedReports = [
+    const normalizedReports = await attachPhotoLists([
       ...reports
         .filter((report) => !report.is_deleted && !report.is_archived)
         .map((report) => normalizeReport(report)),
       ...archivedReports.map((report) => normalizeReport(report, 'archived_reports')),
       ...trashReports.map((report) => normalizeReport(report, 'trash_reports')),
-    ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    ]);
+
+    normalizedReports.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     res.json(normalizedReports);
   } catch (error) {
@@ -865,8 +914,9 @@ const updateReport = async (req, res, next) => {
     if (orderedChangedFields.length === 0) {
       // Nothing actually changed, so leave updated_at and the audit trail
       // untouched instead of recording a no-op edit.
+      const [unchangedReport] = await attachPhotoLists([normalizeReport(report)]);
       return res.json({
-        ...normalizeReport(report),
+        ...unchangedReport,
         changedFields: [],
       });
     }
@@ -912,8 +962,10 @@ const updateReport = async (req, res, next) => {
       );
     }
 
+    const [editedReport] = await attachPhotoLists([normalizeReport(updatedReport)]);
+
     return res.json({
-      ...normalizeReport(updatedReport),
+      ...editedReport,
       changedFields: orderedChangedFields,
     });
   } catch (error) {
@@ -1044,4 +1096,5 @@ module.exports = {
   bulkRestoreReports,
   bulkArchiveReports,
   bulkDeleteReports,
+  attachPhotoLists,
 };

@@ -29,6 +29,29 @@ async function createPhotos(reportId, imageUrls, queryable = pool) {
 }
 
 /**
+ * Retrieves photos for many reports in one round trip, grouped by report id
+ * and ordered by upload order within each report.
+ *
+ * <p>Used to build report listings without issuing one query per report.
+ */
+async function findPhotosByReportIds(reportIds, queryable = pool) {
+  const ids = [...new Set((reportIds || []).filter(Boolean))];
+  if (ids.length === 0) return [];
+
+  const result = await queryable.query(
+    `
+    SELECT report_id, image_url, order_index
+    FROM report_photos
+    WHERE report_id = ANY($1::text[])
+    ORDER BY report_id ASC, order_index ASC
+    `,
+    [ids]
+  );
+
+  return result.rows;
+}
+
+/**
  * Retrieves all photos for a report, ordered by upload order.
  */
 async function findPhotosByReportId(reportId, queryable = pool) {
@@ -67,5 +90,6 @@ module.exports = {
   createPhoto,
   createPhotos,
   findPhotosByReportId,
+  findPhotosByReportIds,
   findPreviewPhotoByReportId,
 };
