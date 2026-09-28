@@ -36,29 +36,42 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
  * Active statuses: Pending, In Progress.
  *
  * Uses Haversine distance in PostgreSQL for accurate geospatial filtering.
+ *
+ * Only clusters that still hold at least one active report are considered. A
+ * cluster outlives its reports (a hard delete leaves the row behind), and
+ * matching on coordinates alone would make such an empty cluster capture every
+ * future submission at that spot and offer to attach it to a spot that no longer
+ * has any reports.
  */
 async function findNearbyActiveCluster(latitude, longitude, radiusMeters = 10, queryable = pool) {
   const result = await queryable.query(
     `
     SELECT
-      cluster_id,
-      center_latitude,
-      center_longitude,
-      status,
-      created_at,
-      updated_at,
-      last_activity_at,
+      c.cluster_id,
+      c.center_latitude,
+      c.center_longitude,
+      c.status,
+      c.created_at,
+      c.updated_at,
+      c.last_activity_at,
       (
         6371000 * 2 * ASIN(
           SQRT(
-            POWER(SIN((center_latitude - $1) * PI() / 180 / 2), 2) +
-            COS($1 * PI() / 180) * COS(center_latitude * PI() / 180) *
-            POWER(SIN((center_longitude - $2) * PI() / 180 / 2), 2)
+            POWER(SIN((c.center_latitude - $1) * PI() / 180 / 2), 2) +
+            COS($1 * PI() / 180) * COS(c.center_latitude * PI() / 180) *
+            POWER(SIN((c.center_longitude - $2) * PI() / 180 / 2), 2)
           )
         )
       ) AS distance_meters
-    FROM report_clusters
-    WHERE status IN ('Pending', 'In Progress')
+    FROM report_clusters c
+    WHERE c.status IN ('Pending', 'In Progress')
+      AND EXISTS (
+        SELECT 1
+        FROM reports r
+        WHERE r.cluster_id = c.cluster_id
+          AND r.is_deleted = false
+          AND r.is_archived = false
+      )
     ORDER BY distance_meters ASC
     LIMIT 1
     `,
@@ -92,24 +105,31 @@ async function findNearbyActiveClusters(latitude, longitude, radiusMeters = 10, 
   const result = await queryable.query(
     `
     SELECT
-      cluster_id,
-      center_latitude,
-      center_longitude,
-      status,
-      created_at,
-      updated_at,
-      last_activity_at,
+      c.cluster_id,
+      c.center_latitude,
+      c.center_longitude,
+      c.status,
+      c.created_at,
+      c.updated_at,
+      c.last_activity_at,
       (
         6371000 * 2 * ASIN(
           SQRT(
-            POWER(SIN((center_latitude - $1) * PI() / 180 / 2), 2) +
-            COS($1 * PI() / 180) * COS(center_latitude * PI() / 180) *
-            POWER(SIN((center_longitude - $2) * PI() / 180 / 2), 2)
+            POWER(SIN((c.center_latitude - $1) * PI() / 180 / 2), 2) +
+            COS($1 * PI() / 180) * COS(c.center_latitude * PI() / 180) *
+            POWER(SIN((c.center_longitude - $2) * PI() / 180 / 2), 2)
           )
         )
       ) AS distance_meters
-    FROM report_clusters
-    WHERE status IN ('Pending', 'In Progress')
+    FROM report_clusters c
+    WHERE c.status IN ('Pending', 'In Progress')
+      AND EXISTS (
+        SELECT 1
+        FROM reports r
+        WHERE r.cluster_id = c.cluster_id
+          AND r.is_deleted = false
+          AND r.is_archived = false
+      )
     ORDER BY distance_meters ASC
     `,
     [latitude, longitude]
