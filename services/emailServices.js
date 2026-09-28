@@ -1,9 +1,47 @@
-const { Resend } = require("resend");
+/*
+ * ---------------------------------------------------------------------------
+ * LEGACY 4-DIGIT OTP EMAILS
+ * ---------------------------------------------------------------------------
+ * This module exists ONLY for the legacy OTP flow that the Admin app still uses.
+ * The Resident app's Firebase flow sends nothing from the server: Firebase will
+ * not send a verification email without a signed-in session, so the app asks
+ * Firebase to send it through the client SDK instead. See
+ * services/firebaseAuthService.js.
+ *
+ * That is why the client is built lazily. The Resident app's routes must work on
+ * a deployment with no mail credential at all, and requiring this module must
+ * never be the thing that fails. A missing key only surfaces if a legacy OTP
+ * email is actually attempted, and it surfaces as a clear message.
+ *
+ * Once the Admin app moves to the Firebase flow, delete this module together with
+ * the resend dependency and RESEND_API_KEY / EMAIL_FROM.
+ */
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resendClient = null;
+
+const getResend = () => {
+  if (resendClient) return resendClient;
+
+  if (!process.env.RESEND_API_KEY) {
+    const error = new Error(
+      'This deployment has no mail provider configured, so the legacy verification '
+      + 'code email cannot be sent.'
+    );
+    error.statusCode = 503;
+    error.code = 'MAIL_PROVIDER_NOT_CONFIGURED';
+    throw error;
+  }
+
+  // Required here rather than at module load so an unconfigured deployment can
+  // still boot and serve the Firebase-based routes.
+  const { Resend } = require('resend');
+  resendClient = new Resend(process.env.RESEND_API_KEY);
+
+  return resendClient;
+};
 
 const getSender = () => {
-    return process.env.EMAIL_FROM || "EcoWatch <onboarding@resend.dev>";
+  return process.env.EMAIL_FROM || "EcoWatch <onboarding@resend.dev>";
 };
 
 /*
@@ -66,7 +104,7 @@ const createDeliveryError = (clientMessage, code, operatorHint) => {
  * told; the diagnosis is preserved on the error for the log.
  */
 async function sendEmail({ to, subject, text }) {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await getResend().emails.send({
         from: getSender(),
         to: [to],
         subject,

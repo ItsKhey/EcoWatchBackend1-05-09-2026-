@@ -72,13 +72,28 @@ const FIREBASE_ERROR_MAP = {
     statusCode: 400,
     message: 'This verification link has expired. Please request a new one.',
   },
+  /*
+   * A registration session that was revoked, tampered with, or signed out. This
+   * is the expected answer when the app presented a stale token, so it is a plain
+   * 401 that tells the resident to check their email again.
+   */
+  'auth/id-token-expired': {
+    statusCode: 401,
+    message: 'This verification session has expired. Please try again.',
+  },
+  'auth/id-token-revoked': {
+    statusCode: 401,
+    message: 'This verification session is no longer valid. Please try again.',
+  },
   'auth/operation-not-allowed': {
     statusCode: 503,
     message: 'Email verification is temporarily unavailable. Please try again later.',
   },
   'auth/invalid-id-token': {
     statusCode: 401,
-    message: 'Not authorized, verification failed',
+    message:
+      'This verification session is not valid yet. Open the verification link in '
+      + 'your email and try again.',
   },
   'auth/too-many-requests': {
     statusCode: 429,

@@ -6,40 +6,13 @@ const Module = require('node:module');
 /*
  * Behavioural tests for the Firebase email-link flow.
  *
- * These exist because of a bug that shipped: registerResident called
- * generateRegistrationId() without importing it. Every check we had passed at that
- * point -- node --check, requiring the module, and the rest of the suite -- because
- * a ReferenceError inside a function body is invisible until that function is
- * actually called.
- *
- * So these tests CALL the handlers. Dependencies are replaced through the module
- * cache so no database, no Firebase project and no network is involved, and the
- * body of each handler runs for real.
+ * These CALL the handlers. Every earlier check that missed a shipped bug was a
+ * check that never executed the function body: a ReferenceError inside a handler
+ * is invisible to parsing, to requiring the module, and to any test that stubs
+ * the layer above it. Dependencies are replaced through the module cache so no
+ * database, no Firebase project and no network is involved.
  */
 
-const REPOSITORY_PATHS = [
-  '../repositories/residentRepository',
-  '../repositories/adminRepository',
-  '../repositories/personnelRepository',
-  '../repositories/pendingRegistrationRepository',
-  '../repositories/passwordResetRepository',
-];
-
-const SERVICE_PATHS = [
-  '../services/firebaseAuthService',
-  '../utils/logger',
-];
-
-const calls = [];
-
-const record = (name, result) => {
-  calls.push({ name, args: result });
-  return result;
-};
-
-/**
- * Replaces a module in the require cache so the controller sees a stub.
- */
 const stubModule = (relativePath, exports) => {
   const resolved = require.resolve(relativePath);
   const stub = new Module(resolved, null);
@@ -49,84 +22,67 @@ const stubModule = (relativePath, exports) => {
   require.cache[resolved] = stub;
 };
 
+const calls = [];
+
+const record = (name, result) => {
+  calls.push({ name, args: result });
+  return result;
+};
+
 /**
  * Stands in for a by-email lookup.
  *
  * When the override declares its own address the stub only answers for that
- * address, which is what a real query does. Without this, a single record would
- * be returned for every address and the tests could not tell the difference
- * between "Firebase named this account" and "some account exists".
- *
- * An override with no address stays address-agnostic, for the cases where the
- * point of the test is simply that the address is taken.
+ * address, which is what a real query does. An override with no address stays
+ * address-agnostic for the cases where the point is simply that it is taken.
  */
 const matchByEmail = (override, email) => {
-  if (!override) {
-    return null;
-  }
-
-  if (!override.email) {
-    return override;
-  }
-
+  if (!override) return null;
+  if (!override.email) return override;
   return String(email).trim().toLowerCase() === String(override.email).trim().toLowerCase()
     ? override
     : null;
 };
 
-/** Minimal Express response double. */
 const makeRes = () => ({
   statusCode: 200,
   body: null,
   headersSent: false,
-  status(code) {
-    this.statusCode = code;
-    return this;
-  },
-  json(body) {
-    this.body = body;
-    return this;
-  },
-  set() {
-    return this;
-  },
+  status(code) { this.statusCode = code; return this; },
+  json(body) { this.body = body; return this; },
+  set() { return this; },
 });
 
-/** Minimal Express request double. */
-const makeReq = (body = {}, query = {}) => ({
+/**
+ * Builds a request double. `auth` is merged onto the request so a handler that
+ * reads req.resident (the JWT-protected ones) can be driven directly.
+ */
+const makeReq = (body = {}, query = {}, auth = {}) => ({
   body,
   query,
   requestId: 'test-request',
+  ...auth,
 });
 
 /**
  * The HTTP status a caller would actually see.
  *
- * This controller reports failures by setting statusCode on the error and
- * forwarding it, and middleware/errorMiddleware.js is what turns that into a
- * response status. The middleware is Express plumbing and is not under test here,
- * so the status is read from whichever carrier the handler used.
+ * Handlers here report failure by setting statusCode on the error and forwarding
+ * it, and middleware/errorMiddleware.js is what turns that into a response
+ * status. That middleware is Express plumbing and is not under test here.
  */
 const statusOf = (res, error) => (
   error && Number.isInteger(error.statusCode) ? error.statusCode : res.statusCode
 );
 
-/**
- * Runs an async handler and returns the error it forwarded, if any.
- *
- * Handlers in this codebase signal failure by calling next(error) rather than
- * throwing, so the error has to be captured rather than caught.
- */
 const run = async (handler, req) => {
   const res = makeRes();
   let forwarded;
-
-  await handler(req, res, (error) => {
-    forwarded = error;
-  });
-
+  await handler(req, res, (error) => { forwarded = error; });
   return { res, error: forwarded };
 };
+
+const calledWith = (name) => calls.find((entry) => entry.name === name);
 
 const validRegistration = (overrides = {}) => ({
   firstName: 'Khei',
@@ -138,24 +94,48 @@ const validRegistration = (overrides = {}) => ({
   ...overrides,
 });
 
+const pendingRegistration = (overrides = {}) => ({
+  registration_id: 'REG-abcdefghijkl',
+  first_name: 'Khei',
+  last_name: 'Saliga',
+  username: 'kheysaliga2',
+  email: 'saligakhey@gmail.com',
+  password_hash: '$2$10$abcdefghijklmnopqrstuv',
+  firebase_uid: null,
+  verification_flow: 'EMAIL_LINK',
+  expires_at: new Date(Date.now() + 60000),
+  verification_sent_at: null,
+  ...overrides,
+});
+
 /**
  * Loads a fresh copy of the controller against stubs.
  *
  * utils/generateId is deliberately NOT stubbed, so the real identifier generators
- * run. That is what makes this suite able to catch the exact class of bug it was
- * written for.
+ * run. That is what lets this suite catch an undefined-identifier bug.
  */
 const loadController = (overrides = {}) => {
   calls.length = 0;
 
+  // `order` records the sequence of writes so a test can assert Supabase is
+  // committed before Firebase is touched.
+  const order = overrides.order || null;
+  const step = (name) => { if (order) order.push(name); };
+
   stubModule('../repositories/residentRepository', {
     findByUsername: async () => overrides.residentByUsername ?? null,
     findByEmail: async (email) => matchByEmail(overrides.residentByEmail, email),
-    findByResidentId: async () => null,
+    findByResidentId: async () => overrides.currentResident ?? null,
     createResident: async (payload) =>
       record('createResident', { resident_id: 'RES-NEW0001', ...payload }),
-    updatePassword: async () => null,
-    setFirebaseUid: async () => null,
+    updatePassword: async (residentId, hash) => {
+      step('supabase');
+      return record('updatePassword', { resident_id: residentId, password_hash: hash });
+    },
+    setFirebaseUid: async (residentId, uid) => {
+      step('supabase-uid');
+      return record('setFirebaseUid', { resident_id: residentId, firebase_uid: uid });
+    },
     findByFirebaseUid: async () => null,
     markEmailVerified: async () => null,
   });
@@ -184,8 +164,6 @@ const loadController = (overrides = {}) => {
     findByRegistrationId: async () => overrides.pending ?? null,
     deleteByRegistrationId: async () => record('deleteByRegistrationId', null),
     deleteUnverifiedByEmail: async () => record('deleteUnverifiedByEmail', []),
-    touchVerificationSent: async () => null,
-    attachFirebaseUid: async () => null,
   });
 
   stubModule('../repositories/passwordResetRepository', {
@@ -197,30 +175,31 @@ const loadController = (overrides = {}) => {
   });
 
   stubModule('../services/firebaseAuthService', {
-    createVerificationIdentity: overrides.createVerificationIdentity
-      || (async (payload) => record('createVerificationIdentity', {
-        uid: 'UID-NEW0001',
-        email: payload.email,
+    // Defaults describe a proven session; individual tests override to model the
+    // failure that matters.
+    verifyRegistrationSession: overrides.verifyRegistrationSession
+      || (async (payload) => record('verifyRegistrationSession', {
+        uid: 'UID-VERIFIED1',
+        email: 'saligakhey@gmail.com',
+        emailVerified: true,
+        sawIdToken: Boolean(payload.idToken),
       })),
-    sendVerificationLink: overrides.sendVerificationLink
-      || (async () => record('sendVerificationLink', null)),
-    sendPasswordResetLink: overrides.sendPasswordResetLink
-      || (async () => record('sendPasswordResetLink', null)),
-    deleteUnverifiedIdentity: overrides.deleteUnverifiedIdentity
-      || (async () => record('deleteUnverifiedIdentity', null)),
-    ensureIdentityForReset: overrides.ensureIdentityForReset
-      || (async () => record('ensureIdentityForReset', { uid: 'UID-EXISTING' })),
-    ensureIdentity: overrides.ensureIdentity
-      || (async () => record('ensureIdentity', { uid: 'UID-EXISTING' })),
     inspectActionCode: overrides.inspectActionCode
       || (async () => record('inspectActionCode', {
         email: 'saligakhey@gmail.com',
         operation: 'PASSWORD_RESET',
       })),
-    isEmailVerified: overrides.isEmailVerified
-      || (async () => record('isEmailVerified', { verified: false, email: null })),
-    overwriteIdentityPassword: async () => record('overwriteIdentityPassword', true),
-    EMAIL_LINK_METHOD: 'EMAIL_LINK',
+    ensureIdentityForReset: overrides.ensureIdentityForReset
+      || (async () => {
+        step('firebase-identity');
+        return record('ensureIdentityForReset', { uid: 'UID-EXISTING', created: false });
+      }),
+    overwriteIdentityPassword: overrides.overwriteIdentityPassword
+      || (async () => {
+        step('firebase-password');
+        return record('overwriteIdentityPassword', true);
+      }),
+    findIdentityByEmail: async () => null,
   });
 
   stubModule('../utils/logger', {
@@ -229,85 +208,68 @@ const loadController = (overrides = {}) => {
     logProfileRequest: () => {},
   });
 
-  // Force a fresh module so the stubs are picked up.
   delete require.cache[require.resolve('../controllers/firebaseAuthController')];
   return require('../controllers/firebaseAuthController');
 };
 
-const calledWith = (name) => calls.find((entry) => entry.name === name);
-
 // ---------------------------------------------------------------------------
-// Registration
+// Registration: the server validates and stages, the app sends the email
 // ---------------------------------------------------------------------------
 
-test('registerResident runs to completion and creates a pending registration', async () => {
+test('registerResident stages the signup and asks the app to send the email', async () => {
   const controller = loadController();
 
-  // The body of this handler is what shipped with the missing import, so merely
-  // reaching the end is the assertion.
   const { res, error } = await run(controller.registerResident, makeReq(validRegistration()));
 
   assert.equal(error, undefined, `handler failed: ${error && error.message}`);
   assert.equal(res.statusCode, 201);
   assert.equal(res.body.success, true);
-  assert.equal(res.body.verificationRequired, true);
-  assert.equal(res.body.verificationMethod, 'EMAIL_LINK');
-  assert.match(res.body.registrationId, /^REG-/);
+  assert.equal(res.body.clientMustSendVerificationEmail, true);
+  assert.match(res.body.registrationId, /^REG-[a-z0-9]{12}$/);
 
   const pending = calledWith('createPendingRegistration');
   assert.ok(pending, 'a pending registration must be created');
   assert.equal(pending.args.verificationFlow, 'EMAIL_LINK');
-  assert.equal(pending.args.firebaseUid, 'UID-NEW0001');
   assert.equal(pending.args.otpHash, null, 'the email-link flow stores no OTP');
-
-  // The account must NOT exist yet. This is the guarantee that an unverified
-  // signup can never log in.
-  assert.equal(
-    calledWith('createResident'),
-    undefined,
-    'no resident row may be created before the email is verified'
-  );
-
-  // The identifier generator must have produced something usable.
-  assert.match(pending.args.registrationId, /^REG-[a-z0-9]{12}$/);
   assert.ok(pending.args.passwordHash.startsWith('$2'), 'password must be bcrypt hashed');
   assert.equal(
     pending.args.passwordHash.includes('@Sample123'),
     false,
     'the plaintext password must never be stored'
   );
+
+  // The critical guarantee: an unverified signup is not an account yet.
+  assert.equal(calledWith('createResident'), undefined,
+    'no resident row may exist before the email is verified');
 });
 
-test('registerResident rejects a taken username before creating anything', async () => {
+test('registerResident rejects a taken username before staging anything', async () => {
   const controller = loadController({ residentByUsername: { resident_id: 'RES-EXIST1' } });
 
   const { res, error } = await run(controller.registerResident, makeReq(validRegistration()));
 
   assert.equal(statusOf(res, error), 409);
   assert.match(error.message, /username/i);
-  assert.equal(calledWith('createVerificationIdentity'), undefined,
-    'no Firebase identity may be created for a rejected registration');
   assert.equal(calledWith('createPendingRegistration'), undefined);
 });
 
-test('registerResident rejects a taken email before creating anything', async () => {
+test('registerResident rejects a taken email before staging anything', async () => {
   const controller = loadController({ adminByEmail: { admin_id: 'ADM-EXIST1' } });
 
   const { res, error } = await run(controller.registerResident, makeReq(validRegistration()));
 
   assert.equal(statusOf(res, error), 409);
   assert.match(error.message, /email/i);
-  assert.equal(calledWith('createVerificationIdentity'), undefined);
+  assert.equal(calledWith('createPendingRegistration'), undefined);
 });
 
-test('registerResident enforces the password policy the server documents', async () => {
+test('registerResident enforces the documented password policy', async () => {
   for (const [password, reason] of [
     ['short1', /at least 8/i],
     ['alllettersonly', /one letter and one number/i],
     ['12345678', /one letter and one number/i],
   ]) {
     const controller = loadController();
-
     const { res, error } = await run(
       controller.registerResident,
       makeReq(validRegistration({ password }))
@@ -315,13 +277,12 @@ test('registerResident enforces the password policy the server documents', async
 
     assert.equal(statusOf(res, error), 400, `expected 400 for ${password}`);
     assert.match(error.message, reason);
-    assert.equal(calledWith('createVerificationIdentity'), undefined);
+    assert.equal(calledWith('createPendingRegistration'), undefined);
   }
 });
 
 test('registerResident rejects a malformed email', async () => {
   const controller = loadController();
-
   const { res, error } = await run(
     controller.registerResident,
     makeReq(validRegistration({ email: 'not-an-email' }))
@@ -331,99 +292,16 @@ test('registerResident rejects a malformed email', async () => {
   assert.match(error.message, /valid email/i);
 });
 
-test('a stale Firebase identity is retired so the address can register again', async () => {
-  let attempts = 0;
+// ---------------------------------------------------------------------------
+// Verification: a Firebase session is the only accepted credential
+// ---------------------------------------------------------------------------
 
-  const controller = loadController({
-    createVerificationIdentity: async (payload) => {
-      attempts += 1;
-      if (attempts === 1) {
-        // Firebase refuses a second createUser for an address it already holds.
-        const error = new Error('already exists');
-        error.firebaseCode = 'auth/email-already-exists';
-        error.statusCode = 409;
-        throw error;
-      }
-      return { uid: 'UID-SECOND', email: payload.email };
-    },
-  });
-
-  // The retry path calls findIdentityByEmail, which the stub does not provide on
-  // the service object, so it is added here.
-  require.cache[require.resolve('../services/firebaseAuthService')].exports.findIdentityByEmail =
-    async () => ({ uid: 'UID-STALE', emailVerified: false });
-
-  const { res, error } = await run(controller.registerResident, makeReq(validRegistration()));
-
-  assert.equal(error, undefined, `handler failed: ${error && error.message}`);
-  assert.equal(res.statusCode, 201);
-  assert.equal(attempts, 2, 'must retry exactly once');
-  assert.ok(calledWith('deleteUnverifiedIdentity'), 'the stale identity must be retired');
-  assert.equal(calledWith('createPendingRegistration').args.firebaseUid, 'UID-SECOND');
-});
-
-test('a failed verification email leaves nothing behind', async () => {
-  const controller = loadController({
-    sendVerificationLink: async () => {
-      throw new Error('resend is down');
-    },
-  });
-
-  const { error } = await run(controller.registerResident, makeReq(validRegistration()));
-
-  assert.ok(error, 'the failure must be forwarded');
-  assert.equal(calledWith('createPendingRegistration'), undefined,
-    'no pending row may survive a failed send');
-  assert.ok(calledWith('deleteUnverifiedIdentity'),
-    'the orphan Firebase identity must be cleaned up');
-});
-
-test('checkVerification reports not-yet-verified without creating an account', async () => {
-  const controller = loadController({
-    isEmailVerified: async () => ({ verified: false, email: 'saligakhey@gmail.com' }),
-    pending: {
-      registration_id: 'REG-abcdefghijkl',
-      username: 'kheysaliga2',
-      email: 'saligakhey@gmail.com',
-      firebase_uid: 'UID-NEW0001',
-      verification_flow: 'EMAIL_LINK',
-      expires_at: new Date(Date.now() + 60000),
-      verification_sent_at: new Date(),
-    },
-  });
+test('checkVerification creates the account from a proven session', async () => {
+  const controller = loadController({ pending: pendingRegistration() });
 
   const { res, error } = await run(
     controller.checkVerification,
-    makeReq({}, { registrationId: 'REG-abcdefghijkl', email: 'saligakhey@gmail.com' })
-  );
-
-  assert.equal(error, undefined);
-  assert.equal(res.body.verified, false);
-  assert.equal(res.body.canResend, true);
-  assert.equal(calledWith('createResident'), undefined,
-    'an unverified email must not produce a resident');
-});
-
-test('checkVerification creates the account once Firebase confirms the address', async () => {
-  const controller = loadController({
-    isEmailVerified: async () => ({ verified: true, email: 'saligakhey@gmail.com' }),
-    pending: {
-      registration_id: 'REG-abcdefghijkl',
-      first_name: 'Khei',
-      last_name: 'Saliga',
-      username: 'kheysaliga2',
-      email: 'saligakhey@gmail.com',
-      password_hash: '$2$10$abcdefghijklmnopqrstuv',
-      firebase_uid: 'UID-NEW0001',
-      verification_flow: 'EMAIL_LINK',
-      expires_at: new Date(Date.now() + 60000),
-      verification_sent_at: new Date(),
-    },
-  });
-
-  const { res, error } = await run(
-    controller.checkVerification,
-    makeReq({}, { registrationId: 'REG-abcdefghijkl', email: 'saligakhey@gmail.com' })
+    makeReq({ registrationId: 'REG-abcdefghijkl', idToken: 'a.b.c' })
   );
 
   assert.equal(error, undefined, `handler failed: ${error && error.message}`);
@@ -431,38 +309,105 @@ test('checkVerification creates the account once Firebase confirms the address',
   assert.equal(res.body.residentId, 'RES-NEW0001');
   assert.equal(res.body.username, 'kheysaliga2');
 
+  const verified = calledWith('verifyRegistrationSession');
+  assert.ok(verified, 'the Firebase session must be verified');
+  assert.equal(verified.args.sawIdToken, true, 'the id token must actually be forwarded');
+
   const created = calledWith('createResident');
-  assert.ok(created, 'the resident row must be created on the transition');
+  assert.ok(created, 'the resident row must be created');
+  assert.equal(created.args.firebaseUid, 'UID-VERIFIED1',
+    'firebase_uid must come from the verified session, not the client');
   assert.equal(created.args.emailVerified, true);
-  assert.equal(created.args.firebaseUid, 'UID-NEW0001');
   assert.equal(created.args.role, 'RESIDENT');
   assert.match(created.args.residentId, /^RES-[A-Z0-9]{8}$/);
 
   assert.ok(calledWith('deleteByRegistrationId'),
-    'the pending row must be removed so the step cannot run twice');
+    'the pending row must be removed so verification cannot run twice');
 });
 
-test('checkVerification refuses an expired registration', async () => {
+test('checkVerification refuses a session whose email was never verified', async () => {
   const controller = loadController({
-    pending: {
-      registration_id: 'REG-abcdefghijkl',
-      username: 'kheysaliga2',
-      email: 'saligakhey@gmail.com',
-      firebase_uid: 'UID-NEW0001',
-      verification_flow: 'EMAIL_LINK',
-      expires_at: new Date(Date.now() - 60000),
-      verification_sent_at: new Date(),
+    pending: pendingRegistration(),
+    verifyRegistrationSession: async () => {
+      const error = new Error(
+        'This email address has not been verified yet. Open the verification link '
+        + 'in your email and try again.'
+      );
+      error.statusCode = 400;
+      error.firebaseCode = 'EMAIL_NOT_VERIFIED';
+      throw error;
     },
   });
 
   const { res, error } = await run(
     controller.checkVerification,
-    makeReq({}, { registrationId: 'REG-abcdefghijkl', email: 'saligakhey@gmail.com' })
+    makeReq({ registrationId: 'REG-abcdefghijkl', idToken: 'a.b.c' })
+  );
+
+  assert.equal(statusOf(res, error), 400);
+  assert.equal(calledWith('createResident'), undefined,
+    'an unverified session must not be able to create an account');
+});
+
+test('a session for one address cannot activate a different registration', async () => {
+  const controller = loadController({
+    pending: pendingRegistration(),
+    // The token is valid and verified, but it names somebody else's address.
+    verifyRegistrationSession: async () => ({
+      uid: 'UID-ATTACKER',
+      email: 'attacker@gmail.com',
+      emailVerified: true,
+    }),
+  });
+
+  const { res, error } = await run(
+    controller.checkVerification,
+    makeReq({ registrationId: 'REG-abcdefghijkl', idToken: 'a.b.c' })
+  );
+
+  assert.equal(statusOf(res, error), 400);
+  assert.equal(calledWith('createResident'), undefined);
+  assert.equal(calledWith('deleteByRegistrationId'), undefined,
+    'the pending row must survive a mismatch so the real owner can still finish');
+});
+
+test('checkVerification refuses an expired registration', async () => {
+  const controller = loadController({
+    pending: pendingRegistration({ expires_at: new Date(Date.now() - 60000) }),
+  });
+
+  const { res, error } = await run(
+    controller.checkVerification,
+    makeReq({ registrationId: 'REG-abcdefghijkl', idToken: 'a.b.c' })
   );
 
   assert.equal(statusOf(res, error), 400);
   assert.match(error.message, /expired/i);
-  assert.equal(calledWith('createResident'), undefined);
+  assert.equal(calledWith('verifyRegistrationSession'), undefined);
+});
+
+test('checkVerification rejects a missing or malformed id token', async () => {
+  for (const body of [
+    { registrationId: 'REG-abcdefghijkl' },
+    { registrationId: 'REG-abcdefghijkl', idToken: '' },
+    { registrationId: 'REG-abcdefghijkl', idToken: 'has space' },
+  ]) {
+    const controller = loadController({ pending: pendingRegistration() });
+    const { res, error } = await run(controller.checkVerification, makeReq(body));
+
+    assert.equal(statusOf(res, error), 400, `expected 400 for ${JSON.stringify(body)}`);
+  }
+});
+
+test('a registration that no longer exists is reported, not silently ignored', async () => {
+  const controller = loadController({ pending: null });
+
+  const { res, error } = await run(
+    controller.checkVerification,
+    makeReq({ registrationId: 'REG-abcdefghijkl', idToken: 'a.b.c' })
+  );
+
+  assert.equal(statusOf(res, error), 404);
 });
 
 // ---------------------------------------------------------------------------
@@ -470,113 +415,90 @@ test('checkVerification refuses an expired registration', async () => {
 // ---------------------------------------------------------------------------
 
 test('forgotPassword does not reveal whether an address is registered', async () => {
-  const withAccount = loadController();
-  const known = await run(
-    withAccount.forgotPassword,
-    makeReq({ email: 'saligakhey@gmail.com' })
-  );
+  const known = loadController({
+    residentByEmail: { resident_id: 'RES-1', username: 'a', email: 'a@gmail.com', status: 'AVAILABLE' },
+  });
+  const knownResult = await run(known.forgotPassword, makeReq({ email: 'a@gmail.com' }));
 
-  const withoutAccount = loadController();
-  const unknown = await run(withoutAccount.forgotPassword, makeReq({ email: 'nobody@nowhere.test' }));
+  const unknown = loadController();
+  const unknownResult = await run(unknown.forgotPassword, makeReq({ email: 'nobody@nowhere.test' }));
 
-  assert.equal(known.error, undefined);
-  assert.equal(unknown.error, undefined);
+  assert.equal(knownResult.error, undefined);
+  assert.equal(unknownResult.error, undefined);
 
-  // Byte-identical responses, or the endpoint becomes an account-enumeration
-  // oracle for which addresses have an EcoWatch account.
-  assert.deepEqual(known.res.body, unknown.res.body);
-  assert.equal(calledWith('sendPasswordResetLink'), undefined,
-    'no link may be attempted for an unknown address');
+  // Byte-identical messaging, or the endpoint is an account-enumeration oracle.
+  assert.equal(knownResult.res.body.message, unknownResult.res.body.message);
+  // The flag differs, so the app knows not to attempt a Firebase send, but the
+  // human-readable message stays identical.
+  assert.equal(knownResult.res.body.canRequestFirebaseEmail, true);
+  assert.equal(unknownResult.res.body.canRequestFirebaseEmail, false);
+  assert.equal(calledWith('ensureIdentityForReset'), undefined,
+    'no Firebase work for an unknown address');
 });
 
-test('forgotPassword sends a link for a known account', async () => {
+test('forgotPassword makes sure a Firebase identity exists so the app can send', async () => {
   const controller = loadController({
     residentByEmail: {
-      resident_id: 'RES-EXIST1',
-      username: 'kheysaliga2',
-      first_name: 'Khei',
-      last_name: 'Saliga',
-      email: 'saligakhey@gmail.com',
-      status: 'AVAILABLE',
+      resident_id: 'RES-1', username: 'a', first_name: 'A', last_name: 'B',
+      email: 'a@gmail.com', status: 'AVAILABLE', firebase_uid: null,
     },
   });
 
-  const { res, error } = await run(
-    controller.forgotPassword,
-    makeReq({ email: 'saligakhey@gmail.com' })
-  );
+  const { res, error } = await run(controller.forgotPassword, makeReq({ email: 'a@gmail.com' }));
 
   assert.equal(error, undefined);
-  assert.ok(calledWith('sendPasswordResetLink'));
+  assert.equal(res.body.canRequestFirebaseEmail, true);
+  assert.ok(calledWith('ensureIdentityForReset'),
+    'a legacy account with no identity must get one so Firebase will send');
+  assert.ok(calledWith('setFirebaseUid'), 'the uid must be backfilled onto the account');
   assert.ok(calledWith('markResetLinkSent'), 'the cooldown must be recorded');
 });
 
-test('forgotPassword still sends for a disabled account, which stays disabled', async () => {
+test('forgotPassword still prepares a reset for a disabled account', async () => {
   const controller = loadController({
     residentByEmail: {
-      resident_id: 'RES-EXIST1',
-      username: 'kheysaliga2',
-      first_name: 'Khei',
-      last_name: 'Saliga',
-      email: 'saligakhey@gmail.com',
-      status: 'DISABLED',
+      resident_id: 'RES-1', username: 'a', email: 'a@gmail.com', status: 'DISABLED',
     },
   });
 
-  const { res, error } = await run(
-    controller.forgotPassword,
-    makeReq({ email: 'saligakhey@gmail.com' })
-  );
+  const { res, error } = await run(controller.forgotPassword, makeReq({ email: 'a@gmail.com' }));
 
-  // Resetting proves control of the inbox, so it is allowed. Re-enabling is not,
-  // and nothing here touches residents.status.
+  // Proving control of the inbox is allowed. Re-enabling is not, and nothing here
+  // touches account status.
   assert.equal(error, undefined);
-  assert.ok(calledWith('sendPasswordResetLink'));
-  assert.equal(calledWith('createResident'), undefined);
+  assert.equal(calledWith('ensureIdentityForReset') !== undefined, true);
 });
 
-test('forgotPassword honours the resend cooldown', async () => {
+test('forgotPassword honours the cooldown', async () => {
   const controller = loadController({
     cooldownSeconds: 42,
     residentByEmail: {
-      resident_id: 'RES-EXIST1',
-      username: 'kheysaliga2',
-      email: 'saligakhey@gmail.com',
-      status: 'AVAILABLE',
+      resident_id: 'RES-1', username: 'a', email: 'a@gmail.com', status: 'AVAILABLE',
     },
   });
 
-  const { res } = await run(controller.forgotPassword, makeReq({ email: 'saligakhey@gmail.com' }));
+  const { res } = await run(controller.forgotPassword, makeReq({ email: 'a@gmail.com' }));
 
-  assert.equal(calledWith('sendPasswordResetLink'), undefined,
-    'a second email inside the cooldown window must be suppressed');
-  assert.match(res.body.message, /check your email|if an account exists/i);
+  assert.equal(res.body.canRequestFirebaseEmail, false);
+  assert.equal(res.body.retryAfterSeconds, 42);
+  assert.equal(calledWith('ensureIdentityForReset'), undefined);
 });
 
 test('resetPassword writes the Supabase hash before syncing Firebase', async () => {
   const order = [];
-
   const controller = loadController({
-    residentByEmail: {
-      resident_id: 'RES-EXIST1',
-      username: 'kheysaliga2',
-      first_name: 'Khei',
-      last_name: 'Saliga',
+    order,
+    // Firebase names the account, so the fixture address has to be the one this
+    // code was issued for. A mismatch is what the next test covers.
+    inspectActionCode: async () => ({
       email: 'saligakhey@gmail.com',
-      status: 'AVAILABLE',
-    },
-    ensureIdentity: async () => {
-      order.push('firebase');
-      return { uid: 'UID-EXISTING', created: false };
+      operation: 'PASSWORD_RESET',
+    }),
+    residentByEmail: {
+      resident_id: 'RES-1', username: 'kheysaliga2', first_name: 'Khei',
+      email: 'saligakhey@gmail.com', status: 'AVAILABLE',
     },
   });
-
-  // Record the Supabase write.
-  require.cache[require.resolve('../repositories/residentRepository')].exports.updatePassword =
-    async (residentId, hash) => {
-      order.push('supabase');
-      return { resident_id: residentId, password_hash: hash };
-    };
 
   const { res, error } = await run(
     controller.resetPassword,
@@ -588,21 +510,27 @@ test('resetPassword writes the Supabase hash before syncing Firebase', async () 
   assert.equal(res.body.username, 'kheysaliga2');
   assert.equal(res.body.firebaseSynced, true);
 
-  // Supabase is the authority and must be committed first, so the new password
-  // works for login the instant this returns.
-  assert.deepEqual(order, ['supabase', 'firebase']);
-  assert.ok(calledWith('clearResetLinkMarker'), 'the cooldown marker must be cleared');
+  // Supabase is the authority and is committed first, so the new password works
+  // for login the instant this returns.
+  assert.equal(order[0], 'supabase', `expected Supabase first, got ${order.join(', ')}`);
+  assert.ok(
+    order.indexOf('firebase-password') > order.indexOf('supabase'),
+    `Firebase must follow Supabase, got ${order.join(', ')}`
+  );
+  assert.ok(calledWith('clearResetLinkMarker'));
 });
 
 test('a Firebase sync failure still reports a successful password change', async () => {
   const controller = loadController({
-    residentByEmail: {
-      resident_id: 'RES-EXIST1',
-      username: 'kheysaliga2',
+    inspectActionCode: async () => ({
       email: 'saligakhey@gmail.com',
+      operation: 'PASSWORD_RESET',
+    }),
+    residentByEmail: {
+      resident_id: 'RES-1', username: 'kheysaliga2', email: 'saligakhey@gmail.com',
       status: 'AVAILABLE',
     },
-    ensureIdentity: async () => {
+    ensureIdentityForReset: async () => {
       const error = new Error('firebase is unreachable');
       error.statusCode = 503;
       throw error;
@@ -637,20 +565,14 @@ test('resetPassword refuses a code issued for a different action', async () => {
   );
 
   assert.equal(statusOf(res, error), 400);
-  assert.ok(error);
 });
 
 test('resetPassword updates the account Firebase names, not one the client names', async () => {
   const controller = loadController({
     // Firebase says the code belongs to a different address.
-    inspectActionCode: async () => ({
-      email: 'other.person@gmail.com',
-      operation: 'PASSWORD_RESET',
-    }),
+    inspectActionCode: async () => ({ email: 'other.person@gmail.com', operation: 'PASSWORD_RESET' }),
     residentByEmail: {
-      resident_id: 'RES-VICTIM01',
-      username: 'victim',
-      email: 'saligakhey@gmail.com',
+      resident_id: 'RES-VICTIM01', username: 'victim', email: 'saligakhey@gmail.com',
       status: 'AVAILABLE',
     },
   });
@@ -660,7 +582,6 @@ test('resetPassword updates the account Firebase names, not one the client names
     makeReq({ oobCode: 'AbC-123_x.y', password: 'Newpass123' })
   );
 
-  // The address Firebase reported has no EcoWatch account, so nothing is touched.
   assert.equal(statusOf(res, error), 400);
   assert.equal(calledWith('clearResetLinkMarker'), undefined);
 });
@@ -668,11 +589,7 @@ test('resetPassword updates the account Firebase names, not one the client names
 test('a malformed oobCode is rejected before it reaches the database', async () => {
   for (const bad of ['', '   ', 'has space', "'; DROP TABLE residents;--"]) {
     const controller = loadController({
-      residentByEmail: {
-        resident_id: 'RES-EXIST1',
-        username: 'kheysaliga2',
-        email: 'saligakhey@gmail.com',
-      },
+      residentByEmail: { resident_id: 'RES-1', username: 'a', email: 'a@gmail.com' },
     });
 
     const { res, error } = await run(
@@ -682,4 +599,73 @@ test('a malformed oobCode is rejected before it reaches the database', async () 
 
     assert.equal(statusOf(res, error), 400, `expected 400 for ${JSON.stringify(bad)}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// sync-firebase-password
+// ---------------------------------------------------------------------------
+
+test('syncFirebasePassword requires the current password, not just a JWT', async () => {
+  const controller = loadController({
+    currentResident: {
+      resident_id: 'RES-1', username: 'a', email: 'a@gmail.com',
+      // Deliberately not a bcrypt hash of anything, so the comparison cannot pass.
+      password_hash: 'not-a-real-hash',
+      role: 'RESIDENT', status: 'AVAILABLE',
+    },
+  });
+
+  const { res, error } = await run(
+    controller.syncFirebasePassword,
+    makeReq({ currentPassword: 'definitely-wrong' }, {}, { resident: { resident_id: 'RES-1', role: 'RESIDENT' } })
+  );
+
+  assert.equal(statusOf(res, error), 401);
+  assert.equal(calledWith('overwriteIdentityPassword'), undefined,
+    'a wrong password must not be able to take over the email identity');
+});
+
+test('syncFirebasePassword cannot be used to rotate the password', async () => {
+  const bcrypt = require('bcryptjs');
+  const hash = await bcrypt.hash('Current123', 10);
+
+  const controller = loadController({
+    currentResident: {
+      resident_id: 'RES-1', username: 'a', email: 'a@gmail.com',
+      password_hash: hash, role: 'RESIDENT', status: 'AVAILABLE',
+    },
+  });
+
+  const { res, error } = await run(
+    controller.syncFirebasePassword,
+    makeReq({ currentPassword: 'Current123', newPassword: 'Different123' }, {},
+      { resident: { resident_id: 'RES-1', role: 'RESIDENT' } })
+  );
+
+  assert.equal(statusOf(res, error), 400);
+  assert.match(error.message, /cannot change your password/i);
+  assert.equal(calledWith('overwriteIdentityPassword'), undefined);
+});
+
+test('syncFirebasePassword aligns the identity once the current password matches', async () => {
+  const bcrypt = require('bcryptjs');
+  const hash = await bcrypt.hash('Current123', 10);
+
+  const controller = loadController({
+    currentResident: {
+      resident_id: 'RES-1', username: 'a', email: 'a@gmail.com',
+      password_hash: hash, role: 'RESIDENT', status: 'AVAILABLE', firebase_uid: null,
+    },
+  });
+
+  const { res, error } = await run(
+    controller.syncFirebasePassword,
+    makeReq({ currentPassword: 'Current123' }, {},
+      { resident: { resident_id: 'RES-1', role: 'RESIDENT' } })
+  );
+
+  assert.equal(error, undefined, `handler failed: ${error && error.message}`);
+  assert.equal(res.body.success, true);
+  assert.ok(calledWith('overwriteIdentityPassword'));
+  assert.ok(calledWith('setFirebaseUid'));
 });

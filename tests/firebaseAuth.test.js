@@ -1,10 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
-  getResendCooldown,
-  RESEND_COOLDOWN_SECONDS,
   EMAIL_LINK_METHOD,
+  RESET_LINK_COOLDOWN_SECONDS,
+  NEUTRAL_RESET_MESSAGE,
 } = require('../controllers/firebaseAuthController');
 
 const {
@@ -18,16 +20,26 @@ const {
 const authController = require('../controllers/authController');
 
 /*
- * Guards the two properties this feature must not break:
+ * Guards the properties this feature must not break:
  *
- *   1. the login path is untouched and still username + bcrypt, and
+ *   1. the login path is untouched and still username + bcrypt,
  *   2. the legacy OTP transport the Admin app depends on still routes exactly as
- *      it did, so a deployed Admin build keeps working.
+ *      it did, and
+ *   3. a Firebase credential is honoured in exactly one place, and that place
+ *      creates an account rather than granting access to one.
  *
  * The validation tests exist because the email-link flow is the only place a
  * password policy is enforced; the legacy flow deliberately is not, and a bug
  * here would reject passwords that work today.
  */
+
+const ANDROID_ROOT = path.join(__dirname, '..', '..', 'MyEcoWatch1');
+const hasAndroidProject = fs.existsSync(ANDROID_ROOT);
+
+const readAndroidSource = (relativePath) => {
+  const full = path.join(ANDROID_ROOT, relativePath);
+  return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
+};
 
 // ---------------------------------------------------------------------------
 // Login is unchanged
@@ -39,8 +51,8 @@ test('login controller is still exported and takes username + password only', ()
 });
 
 test('no Firebase credential is accepted by the login route', () => {
-  const source = require('fs').readFileSync(
-    require('path').join(__dirname, '..', 'controllers', 'authController.js'),
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'controllers', 'authController.js'),
     'utf8'
   );
 
@@ -49,8 +61,8 @@ test('no Firebase credential is accepted by the login route', () => {
     source.indexOf('const getResidentProfile')
   );
 
-  // A Firebase ID token, session cookie or provider result must never be a login
-  // input. If any of these appear, Firebase has been allowed into the login path.
+  // A Firebase ID token or session must never be a login input. If any of these
+  // appear, Firebase has been allowed into the login path.
   for (const forbidden of [
     'idToken',
     'getIdToken',
@@ -137,38 +149,187 @@ test('Resident app requests take the Firebase email-link transport', () => {
 });
 
 test('a registration cannot opt into the weaker flow by naming it', () => {
-  // Only EMAIL_LINK is recognised, and only as an exact match. There is no value
-  // a client can send that selects the legacy path for a new build.
   for (const value of ['otp', 'OTP', 'none', '', null, undefined, 0, false]) {
     assert.equal(
-      dispatchesToFirebase.register({
-        username: 'kheyron123',
-        verificationMethod: value,
-      }),
+      dispatchesToFirebase.register({ username: 'kheyron123', verificationMethod: value }),
       false
     );
   }
 });
 
 // ---------------------------------------------------------------------------
-// Resend cooldown
+// A Firebase credential is honoured in exactly one place
 // ---------------------------------------------------------------------------
 
-test('resend cooldown blocks a second link inside the window', () => {
-  const now = Date.parse('2026-01-01T12:00:00Z');
-  const justSent = new Date(now - 5 * 1000).toISOString();
+test('verifyRegistrationSession is the only place a Firebase ID token is verified', () => {
+  const files = [
+    'controllers/firebaseAuthController.js',
+    'controllers/authController.js',
+    'routes/authRoutes.js',
+    'middleware/authMiddleware.js',
+    'repositories/residentRepository.js',
+    'repositories/adminRepository.js',
+    'utils/generateToken.js',
+  ];
 
-  assert.equal(getResendCooldown(justSent, now), RESEND_COOLDOWN_SECONDS - 5);
-  assert.ok(getResendCooldown(justSent, now) > 0);
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+
+    // Only the service may actually verify a token. Everything else may pass one
+    // along, but must never treat it as proof by itself.
+    assert.equal(
+      /verifyIdToken\s*\(/.test(source),
+      false,
+      `${file} must not call verifyIdToken; only services/firebaseAuthService.js may`
+    );
+  }
+
+  // The token is received by the controller and handed to the service. That is
+  // the whole of its role: it is never trusted locally.
+  const controller = fs.readFileSync(
+    path.join(__dirname, '..', 'controllers', 'firebaseAuthController.js'),
+    'utf8'
+  );
+  assert.match(controller, /verifyRegistrationSession/,
+    'the controller must delegate to the service rather than verify locally');
 });
 
-test('resend cooldown allows a link once the window has passed', () => {
-  const now = Date.parse('2026-01-01T12:00:00Z');
-  const longAgo = new Date(now - (RESEND_COOLDOWN_SECONDS + 1) * 1000).toISOString();
+test('the App Link continue URL is declared by the app, not the backend', () => {
+  // Delivery is now entirely on the device, so the backend holds no continue URL.
+  const service = fs.readFileSync(
+    path.join(__dirname, '..', 'services', 'firebaseAuthService.js'),
+    'utf8'
+  );
 
-  assert.equal(getResendCooldown(longAgo, now), 0);
-  assert.equal(getResendCooldown(null, now), 0);
-  assert.equal(getResendCooldown('not-a-date', now), 0);
+  for (const forbidden of ['FIREBASE_CONTINUE_URL', 'buildActionCodeSettings', 'generatePasswordResetLink']) {
+    assert.equal(
+      service.includes(forbidden),
+      false,
+      `the backend must not hold ${forbidden}; Firebase links are client-driven now`
+    );
+  }
+});
+
+test('the reset cooldown is defined and positive', () => {
+  assert.equal(Number.isInteger(RESET_LINK_COOLDOWN_SECONDS), true);
+  assert.ok(RESET_LINK_COOLDOWN_SECONDS > 0);
+  assert.ok(NEUTRAL_RESET_MESSAGE.length > 0);
+});
+
+// ---------------------------------------------------------------------------
+// Android: the app owns the Firebase session
+// ---------------------------------------------------------------------------
+
+test('the app asks Firebase to send both emails and signs out afterwards', (t) => {
+  if (!hasAndroidProject) {
+    t.skip('MyEcoWatch1 not present in this checkout');
+    return;
+  }
+
+  // FirebaseEmailSession owns every Firebase call, so that is where the session
+  // rules are checked.
+  const session = readAndroidSource(
+    'app/src/main/java/com/example/myecowatch1/utils/FirebaseEmailSession.java'
+  );
+
+  if (!session) {
+    t.skip('FirebaseEmailSession not found');
+    return;
+  }
+
+  // Firebase only sends a verification email for a signed-in user, so these
+  // calls cannot work without a session. They are the reason one exists.
+  assert.match(session, /createUserWithEmailAndPassword/,
+    'the app must create the Firebase user so a verification email can be sent');
+  assert.match(session, /sendEmailVerification/,
+    'the app must trigger the verification email itself');
+
+  // And the session must not outlive registration.
+  assert.match(session, /signOut/,
+    'the app must sign out of Firebase once the account exists');
+
+  // The session is refreshed from the server before the token is read, because
+  // emailVerified on a cached user does not update on its own.
+  assert.match(session, /\.reload\(\)/,
+    'the local session must be refreshed before emailVerified is trusted');
+  assert.match(session, /getIdToken/,
+    'the backend needs a fresh ID token to confirm');
+
+  // The reset email is sent from the device, since Firebase requires a session
+  // for verification and the backend holds no mail credential.
+  const forgot = readAndroidSource(
+    'app/src/main/java/com/example/myecowatch1/ui/auth/ForgotPasswordFragment.java'
+  );
+  assert.ok(forgot, 'ForgotPasswordFragment not found');
+  assert.match(forgot, /sendPasswordResetEmail/,
+    'the app must trigger the reset email itself');
+  assert.match(forgot, /preparePasswordReset/,
+    'the backend must prepare the reset before Firebase will send');
+});
+
+test('the verification screen signs out once the account exists', (t) => {
+  if (!hasAndroidProject) {
+    t.skip('MyEcoWatch1 not present in this checkout');
+    return;
+  }
+
+  const fragment = readAndroidSource(
+    'app/src/main/java/com/example/myecowatch1/ui/auth/VerifyEmailFragment.java'
+  );
+
+  if (!fragment) {
+    t.skip('VerifyEmailFragment not found');
+    return;
+  }
+
+  assert.match(fragment, /FirebaseEmailSession\.signOutQuietly\(\)/,
+    'the session must be closed once the account exists');
+  assert.match(fragment, /checkEmailVerification/,
+    'the backend must confirm the session rather than the app deciding');
+  assert.match(fragment, /resendVerificationEmail|resendVerification/,
+    'the resend button must be present');
+});
+
+test('the app still asks the backend to confirm verification, not Firebase', (t) => {
+  if (!hasAndroidProject) {
+    t.skip('MyEcoWatch1 not present in this checkout');
+    return;
+  }
+
+  const repository = readAndroidSource(
+    'app/src/main/java/com/example/myecowatch1/data/repository/AuthRepository.java'
+  );
+
+  if (!repository) {
+    t.skip('AuthRepository not found');
+    return;
+  }
+
+  // The token is a credential, so it travels in a POST body and never a query string.
+  assert.match(repository, /checkVerification|verifyRegistration/,
+    'the app must call the backend to confirm the verified session');
+  assert.equal(/check-verification\?/.test(repository), false,
+    'the id token must never be placed in a URL');
+});
+
+test('the App Link the emails continue to is declared in the manifest', (t) => {
+  if (!hasAndroidProject) {
+    t.skip('MyEcoWatch1 not present in this checkout');
+    return;
+  }
+
+  const manifest = readAndroidSource('app/src/main/AndroidManifest.xml');
+  if (!manifest) {
+    t.skip('manifest not found');
+    return;
+  }
+
+  assert.match(manifest, /android:autoVerify="true"/,
+    'the App Link must request autoVerify');
+  assert.match(manifest, /android:host="ecowatch1-4445f\.firebaseapp\.com"/,
+    'the App Link host must match the Firebase default domain');
+  assert.match(manifest, /android:pathPrefix="\/finishSignUp"/,
+    'the App Link path must be the one the continue URL points at');
 });
 
 // ---------------------------------------------------------------------------
@@ -239,8 +400,11 @@ test('username mirrors the Android UsernameValidator rule', () => {
 });
 
 test('opaque Firebase tokens are bounded before reaching a query', () => {
+  // A Firebase ID token is dot-separated base64url, and an oobCode is opaque, so
+  // this bound covers both without accepting anything injectable.
   assert.doesNotThrow(() => requireOpaqueToken('REG-a1b2c3d4e5f6', 'Registration ID'));
   assert.doesNotThrow(() => requireOpaqueToken('AbC-123_x.y', 'Reset code'));
+  assert.doesNotThrow(() => requireOpaqueToken('eyJhbGciOi.x9y.zQw_123-abc', 'Verification session'));
 
   for (const bad of ['', '   ', 'has space', "'; DROP TABLE residents;--", 'a'.repeat(513)]) {
     assert.throws(
@@ -249,77 +413,4 @@ test('opaque Firebase tokens are bounded before reaching a query', () => {
       `should reject ${JSON.stringify(bad)}`
     );
   }
-});
-
-// ---------------------------------------------------------------------------
-// App Link continue URL
-// ---------------------------------------------------------------------------
-
-test('the continue URL is an https App Link on the Firebase domain', () => {
-  const { getContinueUrl, getVerificationContinueUrl, DEFAULT_CONTINUE_URL } =
-    require('../services/firebaseAuthService');
-
-  // A custom scheme here would silently reintroduce the browser chooser.
-  assert.match(DEFAULT_CONTINUE_URL, /^https:\/\//);
-  assert.match(DEFAULT_CONTINUE_URL, /\.firebaseapp\.com\//);
-
-  // One URL for both journeys. Firebase separates them with the mode parameter,
-  // and the app's EmailActionActivity routes on it.
-  assert.equal(getVerificationContinueUrl(), getContinueUrl());
-});
-
-test('ActionCodeSettings hand control to the app and pin the Android package', () => {
-  const { buildActionCodeSettings, DEFAULT_ANDROID_PACKAGE, getContinueUrl } =
-    require('../services/firebaseAuthService');
-
-  const settings = buildActionCodeSettings(getContinueUrl());
-
-  // handleCodeInApp is what makes Firebase append the oobCode and redirect to the
-  // app instead of completing the action in the browser.
-  assert.equal(settings.handleCodeInApp, true);
-  assert.equal(settings.url, getContinueUrl());
-  assert.equal(settings.android.packageName, 'com.example.myecowatch1');
-  assert.equal(settings.android.installApp, false);
-  assert.equal(DEFAULT_ANDROID_PACKAGE, 'com.example.myecowatch1');
-});
-
-test('the continue URL host matches the App Link the app declares', () => {  const fs = require('fs');
-  const path = require('path');
-  const { DEFAULT_CONTINUE_URL } = require('../services/firebaseAuthService');
-
-  const manifestPath = path.join(
-    __dirname,
-    '..', '..', 'MyEcoWatch1', 'app', 'src', 'main', 'AndroidManifest.xml'
-  );
-
-  // The backend can be checked out and tested on its own, so the cross-project
-  // assertion is skipped when the app is not present rather than failing the run.
-  if (!fs.existsSync(manifestPath)) {
-    return;
-  }
-
-  const manifest = fs.readFileSync(manifestPath, 'utf8');
-
-  // A host mismatch between the backend and the manifest is invisible until
-  // someone taps an emailed link, so it is checked here instead.
-  assert.ok(
-    manifest.includes('android:host="ecowatch1-4445f.firebaseapp.com"'),
-    'App Link host must be declared in AndroidManifest.xml'
-  );
-  assert.ok(
-    manifest.includes('android:pathPrefix="/finishSignUp"'),
-    'App Link path must be declared in AndroidManifest.xml'
-  );
-  assert.ok(
-    manifest.includes('android:autoVerify="true"'),
-    'App Link must request autoVerify'
-  );
-  assert.ok(
-    DEFAULT_CONTINUE_URL.includes('ecowatch1-4445f.firebaseapp.com'),
-    'continue URL host must match the manifest host'
-  );
-  assert.ok(
-    DEFAULT_CONTINUE_URL.includes('/finishSignUp'),
-    'continue URL path must match the manifest path'
-  );
 });

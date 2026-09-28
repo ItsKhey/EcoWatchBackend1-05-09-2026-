@@ -19,7 +19,6 @@ const {
 const { protect, protectResident } = require('../middleware/authMiddleware');
 
 const {
-  sendVerification,
   checkVerification,
   syncFirebasePassword,
 } = require('../controllers/firebaseAuthController');
@@ -36,18 +35,16 @@ const upload = multer({ storage });
  * carries an oobCode / verificationMethod, and to the legacy OTP transport
  * otherwise. The Admin app sends neither, so it keeps working untouched.
  *
- * The three routes below are new and exist only in the email-link flow.
+ * There is deliberately no send-verification or resend-verification route. The
+ * app asks Firebase to send the verification email itself through the client
+ * SDK, because Firebase refuses to send one without a signed-in session and this
+ * server never signs in. The server's only remaining job is to confirm the
+ * resulting session, which check-verification does.
  */
 
-// Sends a verification link. Mounted on both names so a client that wants the
-// very first send and one that is retrying have an explicit verb each; the
-// cooldown is enforced identically.
-router.post('/send-verification', sendVerification);
-router.post('/resend-verification', sendVerification);
-
-// Reports whether the address behind a registration was verified, and creates the
-// resident row on the transition. Safe to call repeatedly.
-router.get('/check-verification', checkVerification);
+// Confirms a verified Firebase session and creates the account. POST rather than
+// GET because the body carries an ID token, which must never travel in a URL.
+router.post('/check-verification', checkVerification);
 
 // Re-aligns an account's Firebase identity with its Supabase password. JWT
 // protected, and still requires the caller's current password: a token on its own

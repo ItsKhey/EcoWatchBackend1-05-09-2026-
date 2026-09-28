@@ -7,40 +7,40 @@
  * Firebase proves that a person owns an email address. That is the only thing it
  * is ever asked. It never authenticates anyone.
  *
- * Concretely, none of these handlers:
- *   - read a Firebase ID token,
- *   - call signInWith* on the client,
- *   - accept a Firebase session,
- *   - issue a session of any kind, or
- *   - decide whether a login is valid.
+ * One Firebase credential is accepted anywhere in EcoWatch, in one place:
+ * checkVerification accepts a Firebase ID token purely to create an account that
+ * does not exist yet, and only when Firebase says the address behind it was
+ * verified. It is not a login credential, it grants no access to anything, and
+ * the app signs out of Firebase as soon as the account exists.
  *
- * The only credential EcoWatch honours is the JWT in utils/generateToken.js,
- * and the only authority on whether a password is correct is the bcrypt hash in
- * Supabase. After a reset the resident logs in on the login screen with
- * username + password exactly as before.
+ * Login is untouched. No Firebase ID token, session or provider is consulted by
+ * /api/auth/login, the JWT in utils/generateToken.js is the only credential this
+ * system honours, and the bcrypt hash in Supabase is the only authority on
+ * whether a password is correct.
  *
  * ---------------------------------------------------------------------------
- * Why a separate controller
+ * Where the email actually comes from
  * ---------------------------------------------------------------------------
- * controllers/authController.js is the live login path and is left untouched by
- * this feature apart from three one-line delegations that pick a transport. The
- * Firebase-specific logic lives here so the login controller stays a
- * straight-line read of the login flow.
+ * Not from here. Firebase refuses to send a verification email unless a user is
+ * signed in, and this server never signs in. The Android app therefore creates
+ * the Firebase user with the client SDK, asks Firebase to send the email, and
+ * later presents the resulting session for confirmation. That is why this backend
+ * holds no outbound mail credential.
  *
  * ---------------------------------------------------------------------------
  * Transport selection
  * ---------------------------------------------------------------------------
- * /api/auth/register, /api/auth/forgot-password and /api/auth/reset-password
- * are each shared by two verification transports: the legacy 4-digit OTP still
- * used by the Admin app, and the Firebase email link used by the Resident app.
- * They are told apart by request shape, never by a client-supplied flag, so a
- * client cannot ask for a weaker flow by choosing a different value:
+ * /api/auth/register, /api/auth/forgot-password and /api/auth/reset-password are
+ * each shared by two verification transports: the legacy 4-digit OTP still used
+ * by the Admin app, and the Firebase flow used by the Resident app. They are told
+ * apart by request shape, never by a client-supplied switch that could select a
+ * weaker flow:
  *
  *   register         body.verificationMethod === 'EMAIL_LINK'  -> Firebase
  *   forgot-password  body.email present                        -> Firebase
  *   reset-password   body.oobCode present                      -> Firebase
  *
- * Anything else takes the original OTP code path, unchanged.
+ * Anything else takes the original OTP path, unchanged.
  */
 
 const bcrypt = require('bcryptjs');
@@ -69,11 +69,11 @@ const { logInfo, logError } = require('../utils/logger');
 
 const BCRYPT_ROUNDS = 10;
 
-/** An email-link registration stays open for a day; the OTP flow used 5 minutes. */
+/** A registration may sit unverified for a day before it has to be redone. */
 const REGISTRATION_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** Minimum gap between two verification or reset emails to one address. */
-const RESEND_COOLDOWN_SECONDS = 60;
+/** Minimum gap between two reset emails to one address. */
+const RESET_LINK_COOLDOWN_SECONDS = 60;
 
 /*
  * Identical message for "no such account" and "sent", so this endpoint cannot be
@@ -94,7 +94,7 @@ const toHttpError = (statusCode, message) => {
 /**
  * Resolves an email to exactly one EcoWatch account.
  *
- * Residents and admins share the forgot-password endpoints, so both are searched.
+ * Residents and admins share the forgot-password endpoint, so both are searched.
  * Personnel are deliberately excluded: they authenticate through
  * /api/personnel/login with their own flow and are reset by an administrator
  * through /api/personnel, and registration already prevents an address from
@@ -152,30 +152,25 @@ const findConflictingAccounts = async ({ username, email }) => {
     email ? personnelRepository.findByEmail(email) : null,
   ]);
 
-  const usernameTaken = Boolean(
-    residentByUsername || adminByUsername || personnelByUsername
-  );
-  const emailTaken = Boolean(
-    residentByEmail || adminByEmail || personnelByEmail
-  );
-
-  return { usernameTaken, emailTaken };
+  return {
+    usernameTaken: Boolean(residentByUsername || adminByUsername || personnelByUsername),
+    emailTaken: Boolean(residentByEmail || adminByEmail || personnelByEmail),
+  };
 };
 
 /**
- * Turns a verified pending registration into a real resident.
+ * Turns a proven registration into a real resident.
  *
- * Called only after Firebase has reported emailVerified === true for the exact
- * identity stored on the pending row, so by the time this runs the address is
- * already proven.
+ * Called only after Firebase has confirmed the address behind the presented
+ * session was actually verified, so by the time this runs the address is proven.
  *
- * Concurrency: two simultaneous "I verified" taps can both pass the Firebase
+ * Concurrency: two simultaneous "I have verified" taps can both pass the Firebase
  * check. The unique index on residents.username then rejects the second insert,
  * which is caught and answered from the row the first insert created. That makes
  * the endpoint idempotent and safe to retry after a dropped response, without
  * needing a lock around the Firebase call.
  */
-const finalizeRegistration = async (pending, requestId) => {
+const finalizeRegistration = async (pending, firebaseUid, requestId) => {
   const residentId = generateResidentId();
 
   try {
@@ -191,7 +186,7 @@ const finalizeRegistration = async (pending, requestId) => {
       isVerified: true,
       emailVerified: true,
       verifiedAt: new Date(),
-      firebaseUid: pending.firebase_uid,
+      firebaseUid,
       role: 'RESIDENT',
       status: 'AVAILABLE',
       phoneNumber: '',
@@ -234,14 +229,19 @@ const finalizeRegistration = async (pending, requestId) => {
 };
 
 /**
- * @desc    Register a resident account and send a Firebase verification link
+ * @desc    Begin a resident registration
  * @route   POST /api/auth/register
  * @access  Public
  *
- * The account does not exist yet. The password is hashed and held in
- * pending_registrations, and the resident row is only inserted once Firebase
- * confirms the address was opened. An unverified signup can therefore never log
- * in, and never appears in the residents table for an administrator to see.
+ * The account does not exist yet, and nothing is emailed from here. This
+ * validates the details, takes the bcrypt hash, and parks it in
+ * pending_registrations.
+ *
+ * The app then creates the Firebase user with the client SDK and asks Firebase
+ * to send the verification email, because Firebase will not send one without a
+ * signed-in session. The resident row is only inserted once the app presents a
+ * verified session, so an unverified signup can never log in and never appears in
+ * the residents table for an administrator to see.
  */
 const registerResident = async (req, res, next) => {
   try {
@@ -269,86 +269,15 @@ const registerResident = async (req, res, next) => {
     }
 
     /*
-     * Clear any abandoned signup for this address. Without this a resident who
-     * never opens the first verification email would be permanently blocked
-     * from retrying, because the address already has a pending row.
+     * Clear any abandoned signup for this address, so a resident who never opens
+     * the first verification email can simply try again rather than collecting
+     * unreachable rows.
      */
     await pendingRegistrationRepository.deleteUnverifiedByEmail(email);
 
     const registrationId = generateRegistrationId();
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const sentAt = new Date();
     const expiresAt = new Date(Date.now() + REGISTRATION_TTL_MS);
-
-    /*
-     * The Firebase identity is created before the pending row so a Firebase
-     * rejection (an address that already exists in the project, for example)
-     * never leaves a half-registered signup behind.
-     */
-    let identity;
-    try {
-      identity = await firebaseAuthService.createVerificationIdentity({
-        email,
-        password,
-        displayName: `${firstName} ${lastName}`.trim(),
-        requestId: req.requestId,
-      });
-    } catch (error) {
-      /*
-       * A leftover unverified identity from an earlier abandoned attempt would
-       * otherwise make this address permanently unregisterable. Retiring it and
-       * retrying once is safe because no Supabase account can reference it: the
-       * uid is only ever stored on a pending row.
-       */
-      if (String(error.firebaseCode || '') !== 'auth/email-already-exists') {
-        throw error;
-      }
-
-      logInfo(
-        req.requestId,
-        'FIREBASE_AUTH',
-        `retiring stale unverified identity for ${email} and retrying`
-      );
-
-      const stale = await firebaseAuthService.findIdentityByEmail(
-        email,
-        req.requestId
-      );
-
-      if (!stale) {
-        throw error;
-      }
-
-      await firebaseAuthService.deleteUnverifiedIdentity({
-        uid: stale.uid,
-        email,
-        requestId: req.requestId,
-      });
-
-      identity = await firebaseAuthService.createVerificationIdentity({
-        email,
-        password,
-        displayName: `${firstName} ${lastName}`.trim(),
-        requestId: req.requestId,
-      });
-    }
-
-    try {
-      await firebaseAuthService.sendVerificationLink({
-        email,
-        username,
-        requestId: req.requestId,
-      });
-    } catch (error) {
-      // Nothing durable was written, so the Firebase identity goes too.
-      await firebaseAuthService.deleteUnverifiedIdentity({
-        uid: identity.uid,
-        email,
-        requestId: req.requestId,
-      }).catch(() => {});
-
-      throw error;
-    }
 
     const pending = await pendingRegistrationRepository.createPendingRegistration({
       registrationId,
@@ -360,9 +289,9 @@ const registerResident = async (req, res, next) => {
       otpHash: null,
       expiresAt,
       attempts: 0,
-      firebaseUid: identity.uid,
+      firebaseUid: null,
       verificationFlow: EMAIL_LINK_METHOD,
-      verificationSentAt: sentAt,
+      verificationSentAt: null,
     });
 
     logInfo(
@@ -377,11 +306,11 @@ const registerResident = async (req, res, next) => {
       registrationId: pending.registration_id,
       email,
       verificationMethod: EMAIL_LINK_METHOD,
-      verificationRequired: true,
-      resendAvailableInSeconds: RESEND_COOLDOWN_SECONDS,
+      // The app must create the Firebase user and trigger the email itself.
+      clientMustSendVerificationEmail: true,
       expiresAt: pending.expires_at,
       message:
-        'Almost done. Open the verification link we sent to your email to activate your account.',
+        'Almost done. We will email you a verification link to activate your account.',
     });
   } catch (error) {
     return next(error);
@@ -389,36 +318,36 @@ const registerResident = async (req, res, next) => {
 };
 
 /**
- * Seconds still to wait before another link may be issued, or 0 when one may be
- * issued now. Uses the account's own verification_sent_at so the cooldown holds
- * across restarts and across every instance behind the Render load balancer.
- */
-const getResendCooldown = (sentAt, now = Date.now()) => {
-  if (!sentAt) return 0;
-
-  const sentMs = new Date(sentAt).getTime();
-  if (!Number.isFinite(sentMs)) return 0;
-
-  const elapsedSeconds = Math.floor((now - sentMs) / 1000);
-  return Math.max(0, RESEND_COOLDOWN_SECONDS - elapsedSeconds);
-};
-
-/**
- * @desc    Send (or resend) the Firebase verification link for a registration
- * @route   POST /api/auth/send-verification
- * @route   POST /api/auth/resend-verification
+ * @desc    Confirm a registration by presenting a verified Firebase session
+ * @route   POST /api/auth/check-verification
  * @access  Public
  *
- * Both paths are the same operation. The resend variant is the one the app
- * calls; the other exists so a client that wants the very first send has a
- * name for it.
+ * The body carries a Firebase ID token, obtained on the device after the resident
+ * opened their verification email. That token is checked in three ways before
+ * anything is created:
+ *
+ *   - verifyIdToken validates the signature, so the session genuinely came from
+ *     this Firebase project;
+ *   - revocation is checked, so a session the app has already signed out of
+ *     cannot be replayed here;
+ *   - email_verified must be true, so a session that never proved ownership of
+ *     the inbox cannot create anything.
+ *
+ * The address the token names must also match the registration being activated.
+ * A valid token is only ever proof about the address it names, so it must not be
+ * able to activate somebody else's pending signup.
+ *
+ * Once proven, the resident row is created. This is the only place in EcoWatch
+ * where a Firebase credential is honoured, and it creates an account rather than
+ * granting access to one.
  */
-const sendVerification = async (req, res, next) => {
+const checkVerification = async (req, res, next) => {
   try {
     const registrationId = requireOpaqueToken(
       req.body.registrationId,
       'Registration ID'
     );
+    const idToken = requireOpaqueToken(req.body.idToken, 'Verification session');
 
     const pending = await pendingRegistrationRepository.findByRegistrationId(
       registrationId
@@ -446,148 +375,29 @@ const sendVerification = async (req, res, next) => {
       );
     }
 
-    const cooldown = getResendCooldown(pending.verification_sent_at);
-    if (cooldown > 0) {
-      throw toHttpError(
-        429,
-        `Please wait ${cooldown} second${cooldown === 1 ? '' : 's'} before requesting another email.`
-      );
-    }
-
-    // A still-open Firebase link means the address is already proven.
-    const { verified } = await firebaseAuthService.isEmailVerified(
-      pending.firebase_uid,
-      req.requestId
-    );
-
-    if (verified) {
-      const { resident } = await finalizeRegistration(pending, req.requestId);
-      return res.json({
-        success: true,
-        alreadyVerified: true,
-        verified: true,
-        residentId: resident.resident_id,
-        username: resident.username,
-        message: 'Your email is already verified. You can log in now.',
-      });
-    }
-
-    const sentAt = new Date();
-    await firebaseAuthService.sendVerificationLink({
-      email: pending.email,
-      username: pending.username,
+    const session = await firebaseAuthService.verifyRegistrationSession({
+      idToken,
       requestId: req.requestId,
     });
 
-    await pendingRegistrationRepository.touchVerificationSent(
-      registrationId,
-      sentAt
-    );
-
-    logInfo(
-      req.requestId,
-      'FIREBASE_AUTH',
-      `verification link resent for registration=${registrationId}`
-    );
-
-    res.set('Cache-Control', 'no-store');
-    res.json({
-      success: true,
-      sent: true,
-      resendAvailableInSeconds: RESEND_COOLDOWN_SECONDS,
-      message: `We sent a new verification link to ${pending.email}.`,
-    });
-  } catch (error) {
-    return next(error);
-  }
-};
-
-/**
- * @desc    Report whether a registration's email has been verified
- * @route   GET /api/auth/check-verification
- * @access  Public
- *
- * Also finalises the account. Checking is how the app learns the link was
- * opened, and there is no reason to make the resident press a second button
- * once that is true, so the resident row is created on the transition.
- *
- * Safe to call repeatedly and safe to call after a rotation or a process death:
- * once finalised the pending row is gone and the already-created account is
- * reported from residents instead.
- *
- * `email` is required so that the post-finalise case can be answered. It is not
- * a credential: registrationId is a 12-character nanoid and remains the
- * unguessable part of the pair.
- */
-const checkVerification = async (req, res, next) => {
-  try {
-    const registrationId = requireOpaqueToken(
-      req.query.registrationId,
-      'Registration ID'
-    );
-    const email = requireEmail(req.query.email, 'Email');
-
-    const pending = await pendingRegistrationRepository.findByRegistrationId(
-      registrationId
-    );
-
-    if (!pending) {
-      // Either already finalised, or never existed. Only a real account can tell.
-      const match = await findAccountByEmail(email);
-
-      if (match) {
-        return res.json({
-          success: true,
-          verified: true,
-          alreadyFinalized: true,
-          residentId:
-            match.accountType === 'ADMIN'
-              ? match.account.admin_id
-              : match.account.resident_id,
-          username: match.account.username,
-          message: 'Your account is ready. You can log in now.',
-        });
-      }
-
-      throw toHttpError(
-        404,
-        'This registration session no longer exists. Please register again.'
+    // Binds the proof to this specific signup.
+    if (session.email !== normalizeEmail(pending.email)) {
+      logError(
+        req.requestId,
+        'FIREBASE_AUTH',
+        `rejected session for ${session.email} against registration for ${pending.email}`
       );
-    }
-
-    if (String(pending.verification_flow || 'OTP').toUpperCase() !== EMAIL_LINK_METHOD) {
       throw toHttpError(
         400,
-        'This registration used a verification code. Please enter your code instead.'
+        'This verification link is for a different email address. Please register again.'
       );
     }
 
-    if (!pending.expires_at || new Date(pending.expires_at).getTime() < Date.now()) {
-      await pendingRegistrationRepository.deleteByRegistrationId(registrationId);
-      throw toHttpError(
-        400,
-        'This verification session has expired. Please register again.'
-      );
-    }
-
-    const { verified } = await firebaseAuthService.isEmailVerified(
-      pending.firebase_uid,
+    const { resident, created } = await finalizeRegistration(
+      pending,
+      session.uid,
       req.requestId
     );
-
-    if (!verified) {
-      res.set('Cache-Control', 'no-store');
-      return res.json({
-        success: true,
-        verified: false,
-        email: pending.email,
-        canResend: true,
-        resendAvailableInSeconds: getResendCooldown(pending.verification_sent_at),
-        message: 'We have not seen your email opened yet.',
-      });
-    }
-
-    const { resident, created } = await finalizeRegistration(pending, req.requestId);
 
     res.set('Cache-Control', 'no-store');
     res.json({
@@ -606,18 +416,18 @@ const checkVerification = async (req, res, next) => {
 };
 
 /**
- * @desc    Begin a password reset by emailing a Firebase reset link
+ * @desc    Prepare a password reset
  * @route   POST /api/auth/forgot-password
  * @access  Public
  *
- * Firebase generates the link; this backend decides who it is for and by the
- * time the link is opened the password it replaces is already proven to belong
- * to the person holding the inbox.
+ * This sends nothing. It makes sure a Firebase identity exists for the address,
+ * because Firebase will not send a reset email for an address it has never seen,
+ * and it records a cooldown. The app then asks Firebase to send the email itself.
  *
- * Always answers with the same message whether or not the address is
- * registered. Returning "no such account" would turn this into a free oracle for
- * discovering which addresses have EcoWatch accounts, which is a real disclosure
- * of resident data. The real reason is written to the server log instead.
+ * Always answers with the same message whether or not the address is registered.
+ * Returning "no such account" would turn this into a free oracle for discovering
+ * which addresses have EcoWatch accounts. The real reason is written to the
+ * server log instead.
  */
 const forgotPassword = async (req, res, next) => {
   try {
@@ -629,9 +439,15 @@ const forgotPassword = async (req, res, next) => {
       logInfo(
         req.requestId,
         'AUTH',
-        `password reset requested for an unregistered address; no link sent`
+        'password reset requested for an unregistered address; nothing sent'
       );
-      return res.json({ success: true, message: NEUTRAL_RESET_MESSAGE });
+      return res.json({
+        success: true,
+        message: NEUTRAL_RESET_MESSAGE,
+        // The app must not attempt a Firebase send for an address we know nothing
+        // about, which would both fail and act as an account-existence oracle.
+        canRequestFirebaseEmail: false,
+      });
     }
 
     const { account, accountType } = match;
@@ -658,7 +474,12 @@ const forgotPassword = async (req, res, next) => {
         'AUTH',
         `password reset suppressed for ${email}: cooldown ${cooldown}s remaining`
       );
-      return res.json({ success: true, message: NEUTRAL_RESET_MESSAGE });
+      return res.json({
+        success: true,
+        message: NEUTRAL_RESET_MESSAGE,
+        canRequestFirebaseEmail: false,
+        retryAfterSeconds: cooldown,
+      });
     }
 
     const identity = await firebaseAuthService.ensureIdentityForReset({
@@ -669,27 +490,26 @@ const forgotPassword = async (req, res, next) => {
 
     await backfillFirebaseUid(account, accountType, identity.uid);
 
-    await firebaseAuthService.sendPasswordResetLink({
-      email,
-      username: account.username,
-      requestId: req.requestId,
-    });
-
     await passwordResetRepository.markResetLinkSent({
       email,
       userId: account.resident_id || account.admin_id || null,
       sentAt: new Date(),
-      cooldownSeconds: RESEND_COOLDOWN_SECONDS,
+      cooldownSeconds: RESET_LINK_COOLDOWN_SECONDS,
     });
 
     logInfo(
       req.requestId,
       'FIREBASE_AUTH',
-      `password reset link issued for ${email} (${accountType})`
+      `password reset prepared for ${email} (${accountType}); the app will request the email`
     );
 
     res.set('Cache-Control', 'no-store');
-    res.json({ success: true, message: NEUTRAL_RESET_MESSAGE });
+    res.json({
+      success: true,
+      message: NEUTRAL_RESET_MESSAGE,
+      canRequestFirebaseEmail: true,
+      retryAfterSeconds: RESET_LINK_COOLDOWN_SECONDS,
+    });
   } catch (error) {
     return next(error);
   }
@@ -741,10 +561,15 @@ const resetPassword = async (req, res, next) => {
     let firebaseWarning = null;
 
     try {
-      const identity = await firebaseAuthService.ensureIdentity({
+      const identity = await firebaseAuthService.ensureIdentityForReset({
         email,
-        password,
         displayName: [account.first_name, account.last_name].filter(Boolean).join(' '),
+        requestId: req.requestId,
+      });
+
+      await firebaseAuthService.overwriteIdentityPassword({
+        uid: identity.uid,
+        password,
         requestId: req.requestId,
       });
 
@@ -772,8 +597,8 @@ const resetPassword = async (req, res, next) => {
     res.json({
       success: true,
       firebaseSynced,
-      // The account's username is echoed so the app can prefill the login form.
-      // It is not a secret: the resident chose it and just proved the inbox.
+      // Echoed so the app can prefill the login form. Not a secret: the resident
+      // chose it and just proved the inbox.
       username: account.username,
       message: firebaseWarning
         || 'Your password has been changed. Sign in with your username and your new password.',
@@ -789,19 +614,19 @@ const resetPassword = async (req, res, next) => {
  * @route   POST /api/auth/sync-firebase-password
  * @access  Private
  *
- * This is a repair endpoint, not part of the normal journey. It exists for the
- * one case the other flows cannot cover: an account created before this feature
- * has a Supabase bcrypt hash but no Firebase identity, and the resident should
- * not have to go through a password reset just to become resettable.
+ * A repair endpoint, not part of the normal journey. It exists for the case the
+ * other flows cannot cover: an account created before this feature has a
+ * Supabase bcrypt hash but no Firebase identity, and the resident should not have
+ * to go through a password reset just to become resettable.
  *
  * It deliberately requires the caller's current password. A JWT alone is not
- * enough, because a stolen token on a shared device would otherwise be enough
- * to seize the account's email identity and take over future password resets.
- * That is the same bar as /api/auth/change-password.
+ * enough, because a stolen token on a shared device would otherwise be enough to
+ * seize the account's email identity and take over future password resets. That
+ * is the same bar as /api/auth/change-password.
  *
- * Note this is NOT a way to set a new password. `newPassword` is optional and
- * defaults to the current one; when supplied, the current password must still
- * match. Use /api/auth/change-password to actually rotate a password.
+ * Not a way to set a new password: `newPassword` is optional and must equal the
+ * current one when supplied. /api/auth/change-password is the only route that can
+ * actually rotate a credential.
  */
 const syncFirebasePassword = async (req, res, next) => {
   try {
@@ -825,20 +650,14 @@ const syncFirebasePassword = async (req, res, next) => {
       throw toHttpError(400, 'Your current password is required.');
     }
 
-    const matches = await bcrypt.compare(
-      currentPassword,
-      resolved.password_hash
-    );
+    const matches = await bcrypt.compare(currentPassword, resolved.password_hash);
 
     if (!matches) {
       throw toHttpError(401, 'Invalid current password');
     }
 
-    /*
-     * When a new password is supplied it must also be the current one, so this
-     * endpoint can align the two systems but never rotate the credential. The
-     * rotation endpoints are the only ones allowed to change a password.
-     */
+    // When a new password is supplied it must also be the current one, so this
+    // endpoint can align the two systems but never rotate the credential.
     const requested = req.body.newPassword
       ? requirePassword(req.body.newPassword)
       : currentPassword;
@@ -859,10 +678,15 @@ const syncFirebasePassword = async (req, res, next) => {
       );
     }
 
-    const identity = await firebaseAuthService.ensureIdentity({
+    const identity = await firebaseAuthService.ensureIdentityForReset({
       email,
-      password: requested,
       displayName: [resolved.first_name, resolved.last_name].filter(Boolean).join(' '),
+      requestId: req.requestId,
+    });
+
+    await firebaseAuthService.overwriteIdentityPassword({
+      uid: identity.uid,
+      password: requested,
       requestId: req.requestId,
     });
 
@@ -888,12 +712,10 @@ const syncFirebasePassword = async (req, res, next) => {
 module.exports = {
   EMAIL_LINK_METHOD,
   NEUTRAL_RESET_MESSAGE,
-  RESEND_COOLDOWN_SECONDS,
+  RESET_LINK_COOLDOWN_SECONDS,
   findAccountByEmail,
   finalizeRegistration,
-  getResendCooldown,
   registerResident,
-  sendVerification,
   checkVerification,
   forgotPassword,
   resetPassword,
