@@ -516,6 +516,13 @@ async function sendAdminNewReportNotification({
 module.exports = {
   isFirebaseConfigured,
   parseServiceAccountJson,
+  /*
+   * Exported so the Firebase Auth boundary in config/firebaseAdmin.js shares
+   * this single lazily-initialized app. initializeApp throws when called twice
+   * with the same name, and FCM is already the first Firebase consumer, so
+   * Auth has to reuse this instance rather than create its own.
+   */
+  getFirebaseApp,
   sendResidentReportNotification,
   ADMIN_CHANNEL_ID,
   ADMIN_CLICK_ACTION,

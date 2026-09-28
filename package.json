@@ -29,7 +29,9 @@
     "migrate:resident-account-lifecycle": "node migration/migrate-resident-account-lifecycle.js",
     "migrate:report-clusters": "node migration/migrate-report-clusters.js",
     "migrate:cluster-activity": "node migration/migrate-cluster-activity.js",
-    "verify:phase-3a": "node scripts/verify-phase-3a.js"
+    "verify:phase-3a": "node scripts/verify-phase-3a.js",
+    "migrate:firebase-email-verification": "node migration/migrate-firebase-email-verification.js",
+    "verify:firebase-email": "node scripts/verify-firebase-email-setup.js"
   },
   "keywords": [],
   "author": "",

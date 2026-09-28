@@ -336,7 +336,16 @@ async function createResident({
   status = 'AVAILABLE',
   phoneNumber = '',
   createdById = 'SYSTEM',
+  firebaseUid = null,
+  emailVerified = isVerified,
+  verifiedAt = null,
 }) {
+  /*
+   * verified_at is stamped server-side whenever the address was actually proven.
+   * Legacy OTP registrations pass isVerified: true, and the code they entered
+   * was itself the proof, so they are stamped too. Rows that predate this
+   * migration keep a NULL verified_at, which is why nothing gates login on it.
+   */
   const result = await pool.query(
     `
     INSERT INTO residents (
@@ -352,11 +361,15 @@ async function createResident({
       role,
       status,
       phone_number,
-      created_by_id
+      created_by_id,
+      firebase_uid,
+      email_verified,
+      verified_at
     )
     VALUES (
       $1, $2, $3, $4, $5, $6, $7,
-      $8, $9, $10, $11, $12, $13
+      $8, $9, $10, $11, $12, $13,
+      $14, $15, COALESCE($16, NOW())
     )
     RETURNING *
     `,
@@ -374,6 +387,9 @@ async function createResident({
       status,
       phoneNumber,
       createdById,
+      firebaseUid,
+      emailVerified,
+      verifiedAt,
     ]
   );
 
@@ -502,6 +518,86 @@ async function updatePassword(residentId, passwordHash) {
     RETURNING *
     `,
     [passwordHash, residentId]
+  );
+
+  return result.rows[0] || null;
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Firebase email-verification columns
+ * ---------------------------------------------------------------------------
+ * These four helpers are the only writers of firebase_uid / email_verified /
+ * verification_sent_at / verified_at. They are intentionally narrow: nothing
+ * outside this block can mark an address as verified, so "verified" has exactly
+ * one meaning in this codebase.
+ */
+
+/**
+ * Backfills the Firebase identity for an account created before this feature.
+ * Never overwrites an existing uid, so re-running a sync cannot orphan an
+ * identity that password-reset emails are already being generated for.
+ */
+async function setFirebaseUid(residentId, firebaseUid) {
+  if (!firebaseUid) {
+    return findByResidentId(residentId);
+  }
+
+  const result = await pool.query(
+    `
+    UPDATE residents
+    SET firebase_uid = $2
+    WHERE resident_id = $1
+      AND firebase_uid IS NULL
+    RETURNING *
+    `,
+    [residentId, firebaseUid]
+  );
+
+  return result.rows[0] || findByResidentId(residentId);
+}
+
+/**
+ * Records that the address behind this account was proven. verification_sent_at
+ * is only refreshed when the account has never been verified, so a later
+ * resend cannot rewrite the original verification timestamp.
+ */
+async function markEmailVerified(residentId, { verificationSentAt = null } = {}) {
+  const result = await pool.query(
+    `
+    UPDATE residents
+    SET email_verified = true,
+        is_verified = true,
+        verified_at = COALESCE(verified_at, NOW()),
+        verification_sent_at = COALESCE(
+          verification_sent_at,
+          $2,
+          NOW()
+        ),
+        updated_at = NOW()
+    WHERE resident_id = $1
+    RETURNING *
+    `,
+    [residentId, verificationSentAt]
+  );
+
+  return result.rows[0] || null;
+}
+
+/** Resolves a resident through their Firebase identity. */
+async function findByFirebaseUid(firebaseUid) {
+  if (!firebaseUid) {
+    return null;
+  }
+
+  const result = await pool.query(
+    `
+    SELECT *
+    FROM residents
+    WHERE firebase_uid = $1
+    LIMIT 1
+    `,
+    [firebaseUid]
   );
 
   return result.rows[0] || null;
@@ -677,6 +773,9 @@ module.exports = {
   claimFcmToken,
   clearFcmToken,
   updatePassword,
+  setFirebaseUid,
+  markEmailVerified,
+  findByFirebaseUid,
   pauseResidentAccount,
   restorePausedResidentAccount,
   deleteResidentAccount,

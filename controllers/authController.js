@@ -8,6 +8,7 @@ const {
   createResident,
   updateResident,
   updatePassword: updateResidentPassword,
+  setFirebaseUid: residentRepositorySetFirebaseUid,
   touchLastActive: touchResidentLastActive,
   pauseResidentAccount,
   restorePausedResidentAccount,
@@ -22,6 +23,7 @@ const {
   updateAdmin,
   touchLastActive,
   updatePassword: updateAdminPassword,
+  setFirebaseUid: adminRepositorySetFirebaseUid,
 } = require('../repositories/adminRepository');
 
 const {
@@ -42,6 +44,15 @@ const {
   findByUsername: findPersonnelByUsername,
   findByEmail: findPersonnelByEmail,
 } = require('../repositories/personnelRepository');
+
+/*
+ * Firebase email verification + password reset. Imported here only to hand off
+ * the two shared endpoints to the email-link transport; the OTP transport below
+ * stays the default and is unchanged.
+ */
+const firebaseAuthController = require('./firebaseAuthController');
+
+const firebaseAuthService = require('../services/firebaseAuthService');
 
 const generateToken = require('../utils/generateToken');
 const { getResidentLoginDecision } = require('../utils/residentAuth');
@@ -100,6 +111,59 @@ const findUserByIdentifier = async (identifier) => {
   }
 
   return null;
+};
+
+/**
+ * Keeps a Firebase identity in step after a password change made through the
+ * logged-in endpoints.
+ *
+ * Supabase is always committed first and is the authority: login reads the
+ * bcrypt hash from Supabase and nothing else. This runs afterwards purely so the
+ * email address keeps a usable Firebase identity, which is what allows a future
+ * password reset to be emailed at all.
+ *
+ * It therefore never throws and never fails the request. A resident whose
+ * password just changed has succeeded, whether or not Firebase was reachable, and
+ * the drift is repairable later through /api/auth/sync-firebase-password.
+ */
+const syncFirebasePasswordAfterChange = async ({
+  user,
+  isAdmin,
+  newPassword,
+  requestId,
+}) => {
+  try {
+    const email = String(user.email || '').trim().toLowerCase();
+
+    if (!email) {
+      return;
+    }
+
+    const identity = await firebaseAuthService.ensureIdentity({
+      email,
+      password: newPassword,
+      displayName: [user.first_name, user.last_name].filter(Boolean).join(' '),
+      requestId,
+    });
+
+    if (isAdmin) {
+      await adminRepositorySetFirebaseUid(user.admin_id, identity.uid);
+    } else {
+      await residentRepositorySetFirebaseUid(user.resident_id, identity.uid);
+    }
+
+    logInfo(
+      requestId,
+      'FIREBASE_AUTH',
+      `password change synchronised with Firebase for uid=${identity.uid} (created=${identity.created})`
+    );
+  } catch (error) {
+    logError(
+      requestId,
+      'FIREBASE_AUTH',
+      `Supabase password changed but Firebase sync failed: ${error.message}`
+    );
+  }
 };
 
 const mapResidentResponse = (user) => ({
@@ -177,6 +241,19 @@ const registerResident = async (req, res, next) => {
     email,
     password,
   } = req.body;
+
+  /*
+   * Transport selection. A client opts into the Firebase email-link flow by
+   * naming it explicitly; anything else, including a request from a build that
+   * predates this feature, takes the OTP path below exactly as before. The Admin
+   * app sends no such field and is therefore unaffected.
+   */
+  if (
+    String(req.body.verificationMethod || '').trim().toUpperCase()
+      === firebaseAuthController.EMAIL_LINK_METHOD
+  ) {
+    return firebaseAuthController.registerResident(req, res, next);
+  }
 
   try {
     logInfo(
@@ -348,6 +425,16 @@ const verifyOTP = async (req, res, next) => {
 const forgotPassword = async (req, res, next) => {
   const { username, email } = req.body;
 
+  /*
+   * Transport selection. The Firebase flow is addressed by email; the legacy OTP
+   * flow is addressed by username and, when both are present, username wins.
+   * That ordering is what the original controller already implemented, so this
+   * branch cannot change the behaviour of any existing caller.
+   */
+  if (email && !username) {
+    return firebaseAuthController.forgotPassword(req, res, next);
+  }
+
   try {
     if (!username && !email) {
       res.status(400);
@@ -442,7 +529,12 @@ const verifyResetOTP = async (req, res, next) => {
 
     const resetEntry = await findResetByEmail(targetEmail);
 
-    if (!resetEntry) {
+    /*
+     * A row with no otp_hash is the Firebase flow's rate-limit marker, not an
+     * OTP challenge. It is rejected here rather than passed to bcrypt.compare,
+     * which would throw on a null hash and surface as a 500 instead of a 400.
+     */
+    if (!resetEntry || !resetEntry.otp_hash) {
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
@@ -494,6 +586,15 @@ const resetPassword = async (req, res, next) => {
     password,
   } = req.body;
 
+  /*
+   * Transport selection. The Firebase flow presents an oobCode from the emailed
+   * link; the legacy flow presents an OTP. The two can never be confused because
+   * neither field is accepted by the other branch.
+   */
+  if (req.body.oobCode) {
+    return firebaseAuthController.resetPassword(req, res, next);
+  }
+
   try {
     if ((!email && !username) || !otp || !password) {
       res.status(400);
@@ -513,7 +614,12 @@ const resetPassword = async (req, res, next) => {
 
     const resetEntry = await findResetByEmail(targetEmail);
 
-    if (!resetEntry) {
+    /*
+     * A row with no otp_hash is the Firebase flow's rate-limit marker, not an
+     * OTP challenge. It is rejected here rather than passed to bcrypt.compare,
+     * which would throw on a null hash and surface as a 500 instead of a 400.
+     */
+    if (!resetEntry || !resetEntry.otp_hash) {
       res.status(400);
       throw new Error('Invalid or expired OTP');
     }
@@ -627,6 +733,14 @@ const changePassword = async (req, res, next) => {
       } else {
         await updateResidentPassword(user.resident_id, passwordHash);
       }
+
+      // Supabase is committed; keep the Firebase identity in step, best effort.
+      await syncFirebasePasswordAfterChange({
+        user,
+        isAdmin,
+        newPassword,
+        requestId: req.requestId,
+      });
 
       res.json({
         success: true,
@@ -1023,6 +1137,14 @@ const resetLoggedInPassword = async (req, res, next) => {
     } else {
       await updateResidentPassword(user.resident_id, passwordHash);
     }
+
+    // Supabase is committed; keep the Firebase identity in step, best effort.
+    await syncFirebasePasswordAfterChange({
+      user,
+      isAdmin,
+      newPassword: password,
+      requestId: req.requestId,
+    });
 
     res.json({
       success: true,

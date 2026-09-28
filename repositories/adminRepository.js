@@ -187,6 +187,76 @@ async function updatePassword(adminId, passwordHash) {
   return result.rows[0] || null;
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Firebase email-verification columns
+ * ---------------------------------------------------------------------------
+ * Mirrors residentRepository. Administrators run through the same forgot-password
+ * and password-reset endpoints as residents, so the Firebase identity has to be
+ * resolvable for either account type. Both are looked up by email before a reset
+ * link is generated, which is why the two tables carry the same columns.
+ */
+
+/** Never overwrites an existing uid, so a re-sync cannot orphan an identity. */
+async function setFirebaseUid(adminId, firebaseUid) {
+  if (!firebaseUid) {
+    return findByAdminId(adminId);
+  }
+
+  const result = await pool.query(
+    `
+    UPDATE admins
+    SET firebase_uid = $2
+    WHERE admin_id = $1
+      AND firebase_uid IS NULL
+    RETURNING *
+    `,
+    [adminId, firebaseUid]
+  );
+
+  return result.rows[0] || findByAdminId(adminId);
+}
+
+async function markEmailVerified(adminId, { verificationSentAt = null } = {}) {
+  const result = await pool.query(
+    `
+    UPDATE admins
+    SET email_verified = true,
+        is_verified = true,
+        verified_at = COALESCE(verified_at, NOW()),
+        verification_sent_at = COALESCE(
+          verification_sent_at,
+          $2,
+          NOW()
+        ),
+        updated_at = NOW()
+    WHERE admin_id = $1
+    RETURNING *
+    `,
+    [adminId, verificationSentAt]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function findByFirebaseUid(firebaseUid) {
+  if (!firebaseUid) {
+    return null;
+  }
+
+  const result = await pool.query(
+    `
+    SELECT *
+    FROM admins
+    WHERE firebase_uid = $1
+    LIMIT 1
+    `,
+    [firebaseUid]
+  );
+
+  return result.rows[0] || null;
+}
+
 /**
  * Phase 3A: binds a device FCM token to an administrator. Mirrors
  * residentRepository.claimFcmToken: an advisory transaction lock guarantees a
@@ -294,4 +364,7 @@ module.exports = {
   clearFcmToken,
   clearFcmTokenByValue,
   findAllFcmTokens,
+  setFirebaseUid,
+  markEmailVerified,
+  findByFirebaseUid,
 };

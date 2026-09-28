@@ -13,6 +13,7 @@ const { startHistoryCleanupJob } = require('./services/historyCleanupService');
 const { startReportCleanupJob } = require('./services/reportCleanupService');
 const { startAnnouncementCleanupJob } = require('./services/announcementCleanupService');
 const { isFirebaseConfigured } = require('./services/fcmService');
+const { isFirebaseAuthConfigured } = require('./config/firebaseAdmin');
 
 dotenv.config();
 
@@ -38,6 +39,10 @@ app.get('/api/health', (req, res) => {
     status: 'UP',
     database: 'CONNECTED',
     pushNotifications: isFirebaseConfigured() ? 'CONFIGURED' : 'NOT_CONFIGURED',
+    // Shares the same service account as FCM. Reported separately because the
+    // registration and reset flows degrade to 503 without it while login,
+    // reports and notifications keep working.
+    emailVerification: isFirebaseAuthConfigured() ? 'CONFIGURED' : 'NOT_CONFIGURED',
     timestamp: new Date().toISOString()
   });
 });
