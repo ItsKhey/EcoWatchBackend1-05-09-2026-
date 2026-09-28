@@ -53,7 +53,10 @@ const passwordResetRepository = require('../repositories/passwordResetRepository
 
 const firebaseAuthService = require('../services/firebaseAuthService');
 
-const { generateResidentId } = require('../utils/generateId');
+const {
+  generateResidentId,
+  generateRegistrationId,
+} = require('../utils/generateId');
 const {
   normalizeEmail,
   requireEmail,
