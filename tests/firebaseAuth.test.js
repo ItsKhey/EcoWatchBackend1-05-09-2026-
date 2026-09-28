@@ -400,11 +400,10 @@ test('username mirrors the Android UsernameValidator rule', () => {
 });
 
 test('opaque Firebase tokens are bounded before reaching a query', () => {
-  // A Firebase ID token is dot-separated base64url, and an oobCode is opaque, so
-  // this bound covers both without accepting anything injectable.
+  // A registrationId and a password-reset oobCode are both short, so they share
+  // a tight bound.
   assert.doesNotThrow(() => requireOpaqueToken('REG-a1b2c3d4e5f6', 'Registration ID'));
   assert.doesNotThrow(() => requireOpaqueToken('AbC-123_x.y', 'Reset code'));
-  assert.doesNotThrow(() => requireOpaqueToken('eyJhbGciOi.x9y.zQw_123-abc', 'Verification session'));
 
   for (const bad of ['', '   ', 'has space', "'; DROP TABLE residents;--", 'a'.repeat(513)]) {
     assert.throws(
@@ -413,4 +412,59 @@ test('opaque Firebase tokens are bounded before reaching a query', () => {
       `should reject ${JSON.stringify(bad)}`
     );
   }
+});
+
+test('a real-length Firebase ID token is accepted', () => {
+  const {
+    requireFirebaseIdToken,
+    FIREBASE_ID_TOKEN_MAX_LENGTH,
+  } = require('../utils/authValidation');
+
+  /*
+   * A Firebase ID token is a JWT and is routinely 700-1000+ characters. It was
+   * previously being run through the short-token bound above and rejected as
+   * "Verification session is malformed", which is what broke registration.
+   */
+  const segment = (length) => 'a'.repeat(length);
+  const jwt = [
+    segment(36),   // header
+    segment(700),  // payload, comfortably realistic
+    segment(256),  // signature
+  ].join('.');
+
+  assert.ok(jwt.length > 512, 'the token must exceed the short-token bound');
+  assert.ok(jwt.length < FIREBASE_ID_TOKEN_MAX_LENGTH);
+
+  assert.doesNotThrow(() => requireFirebaseIdToken(jwt),
+    'a realistic ID token must be accepted');
+
+  // Trimming is harmless; surrounding whitespace must not fail the request.
+  assert.equal(requireFirebaseIdToken('  ' + jwt + '  '), jwt);
+
+  // Still bounded, and still a JWT shape.
+  for (const bad of [
+    '',
+    '   ',
+    'not-a-jwt',
+    'only.two',
+    'four.parts.are.wrong',
+    'has space.a.b',
+    'a'.repeat(FIREBASE_ID_TOKEN_MAX_LENGTH + 1),
+  ]) {
+    assert.throws(
+      () => requireFirebaseIdToken(bad),
+      undefined,
+      `should reject ${JSON.stringify(bad).slice(0, 40)}`
+    );
+  }
+});
+
+test('the ID token bound is far above the short-token bound on purpose', () => {
+  const {
+    FIREBASE_ID_TOKEN_MAX_LENGTH,
+    OPAQUE_TOKEN_MAX_LENGTH,
+  } = require('../utils/authValidation');
+
+  assert.ok(FIREBASE_ID_TOKEN_MAX_LENGTH > OPAQUE_TOKEN_MAX_LENGTH,
+    'a JWT cannot be validated against the oobCode bound');
 });

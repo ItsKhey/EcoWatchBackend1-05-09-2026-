@@ -60,6 +60,7 @@ const {
 const {
   normalizeEmail,
   requireEmail,
+  requireFirebaseIdToken,
   requireFullName,
   requireOpaqueToken,
   requirePassword,
@@ -347,7 +348,9 @@ const checkVerification = async (req, res, next) => {
       req.body.registrationId,
       'Registration ID'
     );
-    const idToken = requireOpaqueToken(req.body.idToken, 'Verification session');
+    // A Firebase ID token is a JWT and runs well past the length any oobCode
+    // would, so it has its own validator rather than the short-token bound.
+    const idToken = requireFirebaseIdToken(req.body.idToken);
 
     const pending = await pendingRegistrationRepository.findByRegistrationId(
       registrationId

@@ -386,6 +386,31 @@ test('checkVerification refuses an expired registration', async () => {
   assert.equal(calledWith('verifyRegistrationSession'), undefined);
 });
 
+test('checkVerification accepts a full-length Firebase ID token', async () => {
+  /*
+   * Regression guard. A Firebase ID token is a JWT well past 512 characters, and
+   * it was previously validated against that short-token bound, so every real
+   * registration failed with "Verification session is malformed".
+   */
+  const jwt = ['a'.repeat(36), 'b'.repeat(700), 'c'.repeat(256)].join('.');
+  assert.ok(jwt.length > 512);
+
+  const controller = loadController({ pending: pendingRegistration() });
+
+  const { res, error } = await run(
+    controller.checkVerification,
+    makeReq({ registrationId: 'REG-abcdefghijkl', idToken: jwt })
+  );
+
+  assert.equal(error, undefined, `handler failed: ${error && error.message}`);
+  assert.equal(res.body.verified, true);
+  assert.equal(res.body.username, 'kheysaliga2');
+
+  const verified = calledWith('verifyRegistrationSession');
+  assert.ok(verified);
+  assert.equal(verified.args.sawIdToken, true, 'the whole token must reach Firebase');
+});
+
 test('checkVerification rejects a missing or malformed id token', async () => {
   for (const body of [
     { registrationId: 'REG-abcdefghijkl' },
