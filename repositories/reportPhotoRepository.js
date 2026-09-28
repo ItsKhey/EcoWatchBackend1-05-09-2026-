@@ -22,7 +22,7 @@ async function createPhoto(reportId, imageUrl, orderIndex, queryable = pool) {
 async function createPhotos(reportId, imageUrls, queryable = pool) {
   const photos = [];
   for (let i = 0; i < imageUrls.length; i++) {
-    const photo = await createPhoto(reportId, imageUrl[i], i, queryable);
+    const photo = await createPhoto(reportId, imageUrls[i], i, queryable);
     photos.push(photo);
   }
   return photos;
