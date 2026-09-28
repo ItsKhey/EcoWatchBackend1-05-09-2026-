@@ -3,6 +3,12 @@ const bcrypt = require('bcryptjs');
 const reportRepository =
   require('../repositories/reportRepository');
 
+const reportPhotoRepository =
+  require('../repositories/reportPhotoRepository');
+
+const reportPhotoService =
+  require('../services/reportPhotoService');
+
 const personnelController =
   require('./personnelController');
 
@@ -203,8 +209,12 @@ const getAllReports = async (req, res, next) => {
     res.set('Cache-Control', 'no-store');
     // Keep the historical raw array contract while adding canonical
     // assignment aliases and lifecycle metadata used by the admin client.
+    // The photo list is resolved in one batched query so admins can tell a
+    // multi-photo report from a single-photo one.
+    await reportPhotoService.attachPhotosToRows(reports);
     res.json(reports.map((report) => ({
       ...mapAssignmentReport(report),
+      photos: report.photos || [],
       isDeleted: report.is_deleted === true,
       isArchived: report.is_archived === true || report.source_collection === 'archived_reports',
       isRestored: report.is_restored === true,
@@ -222,6 +232,10 @@ const lifecycleResponse = (result) => {
     report: {
       ...report,
       ...mapAssignmentReport(result.report),
+      // Photos are resolved from the raw row synchronously here; the row is a
+      // single report, so the cover image is a safe stand-in until the next
+      // listing refresh supplies the full list.
+      photos: reportPhotoRepository.buildPhotoList(result.report.image_url, null),
     },
   };
 };

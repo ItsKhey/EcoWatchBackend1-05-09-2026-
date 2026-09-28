@@ -2,6 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const reportPhotoRepository = require('../repositories/reportPhotoRepository');
+const { buildPhotoList } = reportPhotoRepository;
+
+const url = (name) => `https://res.cloudinary.com/demo/image/upload/${name}.jpg`;
 
 /**
  * createPhotos is called from inside the report creation transaction with a
@@ -65,4 +68,42 @@ test('createPhotos writes no rows for an empty url list', async () => {
 
   assert.deepEqual(photos, []);
   assert.equal(queryable.calls.length, 0);
+});
+
+/**
+ * buildPhotoList backs both the resident and the admin photo arrays, so the
+ * cover-first ordering and the de-duplication rules have to hold for the admin
+ * list too. The admin endpoints pass the raw image_url column as the cover.
+ */
+test('buildPhotoList leads with the cover image', () => {
+  assert.deepEqual(
+    buildPhotoList(url('cover'), [url('cover'), url('second'), url('third')]),
+    [url('cover'), url('second'), url('third')]
+  );
+});
+
+test('buildPhotoList keeps a cover that is missing from the photo rows', () => {
+  // Reports uploaded before the per-photo rows existed only have a cover.
+  assert.deepEqual(buildPhotoList(url('only-cover'), []), [url('only-cover')]);
+  assert.deepEqual(buildPhotoList(url('only-cover'), null), [url('only-cover')]);
+});
+
+test('buildPhotoList is empty for a report with no image', () => {
+  assert.deepEqual(buildPhotoList(null, []), []);
+  assert.deepEqual(buildPhotoList(undefined, undefined), []);
+  assert.deepEqual(buildPhotoList('', null), []);
+});
+
+test('buildPhotoList drops blanks, non-strings and repeats', () => {
+  assert.deepEqual(
+    buildPhotoList(url('a'), [url('a'), '', '   ', null, 42, url('b'), url('b')]),
+    [url('a'), url('b')]
+  );
+});
+
+test('buildPhotoList trims surrounding whitespace', () => {
+  assert.deepEqual(buildPhotoList(`  ${url('a')}  `, [`\t${url('b')}\n`]), [
+    url('a'),
+    url('b'),
+  ]);
 });

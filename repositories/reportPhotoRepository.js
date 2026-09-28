@@ -29,6 +29,31 @@ async function createPhotos(reportId, imageUrls, queryable = pool) {
 }
 
 /**
+ * Builds the photo list for a single report.
+ *
+ * <p>The cover image is the canonical first photo, so it always leads the list.
+ * That keeps a single-photo report rendering identically and stops a re-uploaded
+ * cover from appearing twice.
+ */
+function buildPhotoList(coverUrl, photoUrls) {
+  const photos = [];
+  const seen = new Set();
+
+  const add = (value) => {
+    if (typeof value !== 'string') return;
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    photos.push(trimmed);
+  };
+
+  add(coverUrl);
+  for (const url of photoUrls || []) add(url);
+
+  return photos;
+}
+
+/**
  * Retrieves photos for many reports in one round trip, grouped by report id
  * and ordered by upload order within each report.
  *
@@ -92,4 +117,5 @@ module.exports = {
   findPhotosByReportId,
   findPhotosByReportIds,
   findPreviewPhotoByReportId,
+  buildPhotoList,
 };

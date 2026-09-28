@@ -1,5 +1,6 @@
 const residentRepository = require('../repositories/residentRepository');
 const reportRepository = require('../repositories/reportRepository');
+const reportPhotoService = require('../services/reportPhotoService');
 const { createHttpError } = require('../utils/personnelValidation');
 const {
   parseReportPageQuery,
@@ -169,9 +170,11 @@ const getResidentReports = async (req, res, next) => {
     const totalPages = Math.ceil(total / options.limit);
 
     res.set('Cache-Control', 'no-store');
+    const reports = reportPage.reports.map(mapReport);
+    await reportPhotoService.attachPhotoLists(reports);
     res.json({
       success: true,
-      reports: reportPage.reports.map(mapReport),
+      reports,
       count: reportPage.reports.length,
       pagination: {
         page: options.page,

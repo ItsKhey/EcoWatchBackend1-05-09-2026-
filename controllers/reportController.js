@@ -5,6 +5,7 @@ const historyRepository = require('../repositories/historyRepository');
 const personnelRepository = require('../repositories/personnelRepository');
 const clusterRepository = require('../repositories/clusterRepository');
 const reportPhotoRepository = require('../repositories/reportPhotoRepository');
+const reportPhotoService = require('../services/reportPhotoService');
 const { withTransaction } = require('../config/db');
 const { generateReportId } = require('../utils/generateId');
 const { uploadImage, destroyImage } = require('../services/cloudinaryService');
@@ -66,45 +67,13 @@ const normalizeReport = (report, sourceCollection = 'reports') => {
  *
  * <p>The `imageUrl` field is only the cover photo, so a multi-photo report
  * cannot be fully rendered from it. This resolves the `report_photos` rows in
- * one batched query and exposes them as `photos`, which always leads with the
- * cover image so ordering and the single-photo case stay consistent.
+ * one batched query and exposes them as `photos`.
  *
  * <p>A failure to read the photo rows must never fail the report itself, so any
  * error degrades to the cover image only.
  */
-const attachPhotoLists = async (normalizedReports) => {
-  const reports = Array.isArray(normalizedReports) ? normalizedReports : [normalizedReports];
-
-  let photosByReportId = new Map();
-  try {
-    const rows = await reportPhotoRepository.findPhotosByReportIds(
-      reports.map((report) => report?.reportId)
-    );
-    photosByReportId = rows.reduce((grouped, row) => {
-      if (!row || !row.report_id || !row.image_url) return grouped;
-      const existing = grouped.get(row.report_id) || [];
-      existing.push(row.image_url);
-      grouped.set(row.report_id, existing);
-      return grouped;
-    }, new Map());
-  } catch (error) {
-    logError(null, 'REPORT_PHOTO', `Could not load report photos: ${error.message}`);
-  }
-
-  for (const report of reports) {
-    if (!report) continue;
-    const photos = (photosByReportId.get(report.reportId) || []).slice();
-    // The cover image is the canonical first photo. Leading with it keeps a
-    // single-photo report rendering identically and stops a re-uploaded cover
-    // from duplicating an entry.
-    if (report.imageUrl && !photos.includes(report.imageUrl)) {
-      photos.unshift(report.imageUrl);
-    }
-    report.photos = photos;
-  }
-
-  return Array.isArray(normalizedReports) ? normalizedReports : normalizedReports;
-};
+const attachPhotoLists = (normalizedReports) =>
+  reportPhotoService.attachPhotoLists(normalizedReports);
 
 const logHistory = async (data) => {
   try {
