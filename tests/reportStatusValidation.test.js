@@ -5,7 +5,7 @@ const {
   normalizeReportStatus,
   validateResponsePayload,
   validateStatusPayload,
-} = require('../utils/reportStatusValidation');
+} = require('../src/modules/reports/reportStatusValidation');
 
 test('normalizes supported admin report statuses', () => {
   assert.equal(normalizeReportStatus('in_progress'), 'In Progress');

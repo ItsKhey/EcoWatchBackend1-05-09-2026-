@@ -8,7 +8,7 @@ const path = require('path');
 
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
-const { appConnection } = require('../config/db');
+const { appConnection } = require('../src/config/db');
 const Resident = require('../models/Resident');
 const Admin = require('../models/Admin');
 

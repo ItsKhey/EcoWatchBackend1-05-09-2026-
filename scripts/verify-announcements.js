@@ -10,7 +10,9 @@
  */
 
 require('dotenv').config();
-const { pool } = require('../config/db');
+
+const { resolveConnectionString } = require('../src/config/database');
+const { pool } = require('../src/config/db');
 
 const failures = [];
 const notes = [];
@@ -49,8 +51,8 @@ const constraintDefinition = async (name) => {
 };
 
 async function main() {
-  if (!process.env.SUPABASE_DATABASE_URL) {
-    console.error('[VERIFY] SUPABASE_DATABASE_URL is required.');
+  if (!resolveConnectionString()) {
+    console.error('[VERIFY] DATABASE_URL (local) or SUPABASE_DATABASE_URL (hosted) is required.');
     process.exitCode = 1;
     return;
   }

@@ -1,14 +1,41 @@
+// Live Cloudinary integration test: every case here uploads a real asset and
+// then asserts it is gone from the CDN again.
+//
+// It therefore pins the storage provider instead of inheriting the ambient
+// default, which is the local disk provider for a local-server setup. Without
+// this, the uploads would land on local disk and every Cloudinary Admin API
+// assertion below would fail.
+process.env.IMAGE_STORAGE_PROVIDER = 'cloudinary';
+
+require('dotenv').config({ quiet: true });
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { pool } = require('../config/db');
-const cloudinary = require('../config/cloudinary');
-const { uploadImage, extractPublicId } = require('../services/cloudinaryService');
-const reportRepository = require('../repositories/reportRepository');
-const archivedReportRepository = require('../repositories/archivedReportRepository');
-const trashReportRepository = require('../repositories/trashReportRepository');
-const reportController = require('../controllers/reportController');
-const lifecycle = require('../services/adminReportLifecycleService');
+const CLOUDINARY_CONFIGURED = [
+  'CLOUDINARY_CLOUD_NAME',
+  'CLOUDINARY_API_KEY',
+  'CLOUDINARY_API_SECRET'
+].every((name) => Boolean(process.env[name]));
+
+// Skipped rather than failed on a machine with no Cloudinary credentials, so a
+// local-only setup still runs the rest of the suite.
+const cloudinaryOnly = {
+  skip: CLOUDINARY_CONFIGURED ? false : 'CLOUDINARY_* is not configured'
+};
+
+const { pool } = require('../src/config/db');
+
+// Required conditionally: config/cloudinary throws when it is unconfigured, and
+// that must not stop this file from loading.
+const cloudinary = CLOUDINARY_CONFIGURED ? require('../src/config/cloudinary') : null;
+const { uploadImage, extractPublicId } = require('../src/shared/cloudinaryService');
+
+const reportRepository = require('../src/modules/reports/reportRepository');
+const archivedReportRepository = require('../src/modules/reports/archivedReportRepository');
+const trashReportRepository = require('../src/modules/reports/trashReportRepository');
+const reportController = require('../src/modules/reports/reportController');
+const lifecycle = require('../src/modules/reports/adminReportLifecycleService');
 
 const RESIDENT_ID = 'RES-IMG-CLEANUP';
 const ADMIN_ID = 'ADM-IMG-CLEANUP';
@@ -165,7 +192,7 @@ test.after(async () => {
   await pool.end();
 });
 
-test('a permanently deleted report takes its Cloudinary image with it', async () => {
+test('a permanently deleted report takes its Cloudinary image with it', cloudinaryOnly, async () => {
   const { report, asset } = await seedReportWithAsset();
   const publicId = extractPublicId(asset.secure_url);
   assert.ok(publicId, 'the uploaded delivery URL yields a public id');
@@ -184,7 +211,7 @@ test('a permanently deleted report takes its Cloudinary image with it', async ()
   await assertDeliveryGone(asset.secure_url);
 });
 
-test('a report whose image was already removed is still deleted', async () => {
+test('a report whose image was already removed is still deleted', cloudinaryOnly, async () => {
   const { report, asset } = await seedReportWithAsset();
   const publicId = extractPublicId(asset.secure_url);
 
@@ -199,7 +226,7 @@ test('a report whose image was already removed is still deleted', async () => {
   assert.equal(stored, null, 'the report row is still removed from PostgreSQL');
 });
 
-test('a report with no image at all is deleted without contacting Cloudinary', async () => {
+test('a report with no image at all is deleted without contacting Cloudinary', cloudinaryOnly, async () => {
   await seedResident();
   const reportId = `REP-NOIMG${Date.now().toString(36)}`;
   const created = await reportRepository.createReport({
@@ -219,7 +246,7 @@ test('a report with no image at all is deleted without contacting Cloudinary', a
   assert.equal(await reportRepository.findByReportId(reportId), null);
 });
 
-test('a non-Cloudinary image_url is never handed to the uploader', async () => {
+test('a non-Cloudinary image_url is never handed to the uploader', cloudinaryOnly, async () => {
   await seedResident();
   const reportId = `REP-FOREIGN${Date.now().toString(36)}`;
   const foreignUrl = 'https://attacker.example.com/evil.png';
@@ -240,7 +267,7 @@ test('a non-Cloudinary image_url is never handed to the uploader', async () => {
   assert.equal(await reportRepository.findByReportId(reportId), null);
 });
 
-test('permanent delete from the Trash Bin releases the image', async () => {
+test('permanent delete from the Trash Bin releases the image', cloudinaryOnly, async () => {
   const { report, asset } = await seedReportWithAsset();
   const publicId = extractPublicId(asset.secure_url);
 
@@ -262,7 +289,7 @@ test('permanent delete from the Trash Bin releases the image', async () => {
   await assertDeliveryGone(asset.secure_url);
 });
 
-test('permanent delete of an archived report releases the image it owns', async () => {
+test('permanent delete of an archived report releases the image it owns', cloudinaryOnly, async () => {
   const { report, asset } = await seedReportWithAsset();
   const publicId = extractPublicId(asset.secure_url);
 
@@ -286,7 +313,7 @@ test('permanent delete of an archived report releases the image it owns', async 
   assert.equal(await assetExists(publicId), false, 'the image is released from the archive');
 });
 
-test('a lifecycle move keeps the image, and the later permanent delete releases it', async () => {
+test('a lifecycle move keeps the image, and the later permanent delete releases it', cloudinaryOnly, async () => {
   const { report, asset } = await seedReportWithAsset();
   const publicId = extractPublicId(asset.secure_url);
 
@@ -312,7 +339,7 @@ test('a lifecycle move keeps the image, and the later permanent delete releases 
   assert.equal(await assetExists(publicId), false, 'the permanent delete released the photo');
 });
 
-test('the resident permanent delete endpoint releases the image', async () => {
+test('the resident permanent delete endpoint releases the image', cloudinaryOnly, async () => {
   const { report, asset } = await seedReportWithAsset();
   const publicId = extractPublicId(asset.secure_url);
 
@@ -324,7 +351,7 @@ test('the resident permanent delete endpoint releases the image', async () => {
   assert.equal(await assetExists(publicId), false, 'the endpoint released the image');
 });
 
-test('the bulk permanent delete endpoint releases every image', async () => {
+test('the bulk permanent delete endpoint releases every image', cloudinaryOnly, async () => {
   const first = await seedReportWithAsset();
   const second = await seedReportWithAsset();
   const publicIds = [first.asset, second.asset].map((asset) => extractPublicId(asset.secure_url));
@@ -348,7 +375,7 @@ test('the bulk permanent delete endpoint releases every image', async () => {
   }
 });
 
-test('the expiration cleanup job releases images for every report it removes', async () => {
+test('the expiration cleanup job releases images for every report it removes', cloudinaryOnly, async () => {
   const first = await seedReportWithAsset();
   const second = await seedReportWithAsset();
   const publicIds = [first.asset, second.asset].map((asset) => extractPublicId(asset.secure_url));
@@ -362,7 +389,7 @@ test('the expiration cleanup job releases images for every report it removes', a
     });
   }
 
-  const { permanentlyDeleteExpiredReports } = require('../services/reportCleanupService');
+  const { permanentlyDeleteExpiredReports } = require('../src/modules/reports/reportCleanupService');
   const markers = await permanentlyDeleteExpiredReports();
 
   assert.ok(markers.length >= 2, 'the job picked up the expired reports');
@@ -378,7 +405,7 @@ test('the expiration cleanup job releases images for every report it removes', a
   }
 });
 
-test('no orphaned Cloudinary files are left in the verification folder', async () => {
+test('no orphaned Cloudinary files are left in the verification folder', cloudinaryOnly, async () => {
   const remaining = await countFolderAssets();
   assert.equal(
     remaining,

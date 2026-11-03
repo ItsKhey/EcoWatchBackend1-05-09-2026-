@@ -9,7 +9,7 @@ const path = require('path');
 // Load env vars from parent directory
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
-const { appConnection, adminConnection } = require('../config/db');
+const { appConnection, adminConnection } = require('../src/config/db');
 const Resident = require('../models/Resident');
 const Admin = require('../models/Admin');
 

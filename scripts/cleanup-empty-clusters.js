@@ -9,7 +9,7 @@
  * Dry run by default. Pass --apply to delete.
  */
 require('dotenv').config();
-const { pool } = require('../config/db');
+const { pool } = require('../src/config/db');
 
 const APPLY = process.argv.includes('--apply');
 

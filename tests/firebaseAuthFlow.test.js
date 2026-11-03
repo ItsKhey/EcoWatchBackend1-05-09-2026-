@@ -89,6 +89,9 @@ const validRegistration = (overrides = {}) => ({
   lastName: 'Saliga',
   username: 'kheysaliga2',
   email: 'saligakhey@gmail.com',
+  // Required on every registration transport, so it belongs in the fixture that
+  // stands for "a signup that passes validation".
+  phoneNumber: '09171234567',
   password: '@Sample123',
   verificationMethod: 'EMAIL_LINK',
   ...overrides,
@@ -122,7 +125,7 @@ const loadController = (overrides = {}) => {
   const order = overrides.order || null;
   const step = (name) => { if (order) order.push(name); };
 
-  stubModule('../repositories/residentRepository', {
+  stubModule('../src/modules/residents/residentRepository', {
     findByUsername: async () => overrides.residentByUsername ?? null,
     findByEmail: async (email) => matchByEmail(overrides.residentByEmail, email),
     findByResidentId: async () => overrides.currentResident ?? null,
@@ -140,7 +143,7 @@ const loadController = (overrides = {}) => {
     markEmailVerified: async () => null,
   });
 
-  stubModule('../repositories/adminRepository', {
+  stubModule('../src/modules/admin/adminRepository', {
     findByUsername: async () => overrides.adminByUsername ?? null,
     findByEmail: async (email) => matchByEmail(overrides.adminByEmail, email),
     findByAdminId: async () => null,
@@ -150,12 +153,12 @@ const loadController = (overrides = {}) => {
     markEmailVerified: async () => null,
   });
 
-  stubModule('../repositories/personnelRepository', {
+  stubModule('../src/modules/personnel/personnelRepository', {
     findByUsername: async () => overrides.personnelByUsername ?? null,
     findByEmail: async () => overrides.personnelByEmail ?? null,
   });
 
-  stubModule('../repositories/pendingRegistrationRepository', {
+  stubModule('../src/modules/auth/pendingRegistrationRepository', {
     createPendingRegistration: async (payload) =>
       record('createPendingRegistration', {
         registration_id: payload.registrationId,
@@ -166,7 +169,7 @@ const loadController = (overrides = {}) => {
     deleteUnverifiedByEmail: async () => record('deleteUnverifiedByEmail', []),
   });
 
-  stubModule('../repositories/passwordResetRepository', {
+  stubModule('../src/modules/auth/passwordResetRepository', {
     getCooldownSeconds: async () => overrides.cooldownSeconds ?? 0,
     markResetLinkSent: async () => record('markResetLinkSent', null),
     clearResetLinkMarker: async () => record('clearResetLinkMarker', null),
@@ -174,7 +177,7 @@ const loadController = (overrides = {}) => {
     deleteByEmail: async () => null,
   });
 
-  stubModule('../services/firebaseAuthService', {
+  stubModule('../src/modules/auth/firebaseAuthService', {
     // Defaults describe a proven session; individual tests override to model the
     // failure that matters.
     verifyRegistrationSession: overrides.verifyRegistrationSession
@@ -202,14 +205,14 @@ const loadController = (overrides = {}) => {
     findIdentityByEmail: async () => null,
   });
 
-  stubModule('../utils/logger', {
+  stubModule('../src/shared/logger', {
     logInfo: () => {},
     logError: () => {},
     logProfileRequest: () => {},
   });
 
-  delete require.cache[require.resolve('../controllers/firebaseAuthController')];
-  return require('../controllers/firebaseAuthController');
+  delete require.cache[require.resolve('../src/modules/auth/firebaseAuthController')];
+  return require('../src/modules/auth/firebaseAuthController');
 };
 
 // ---------------------------------------------------------------------------
@@ -231,6 +234,11 @@ test('registerResident stages the signup and asks the app to send the email', as
   assert.ok(pending, 'a pending registration must be created');
   assert.equal(pending.args.verificationFlow, 'EMAIL_LINK');
   assert.equal(pending.args.otpHash, null, 'the email-link flow stores no OTP');
+  assert.equal(
+    pending.args.phoneNumber,
+    '09171234567',
+    'the signup phone must be staged or it is lost when the resident row is created'
+  );
   assert.ok(pending.args.passwordHash.startsWith('$2'), 'password must be bcrypt hashed');
   assert.equal(
     pending.args.passwordHash.includes('@Sample123'),

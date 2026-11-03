@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const {
   normalizeReport,
   bulkLifecycle,
-} = require('../services/adminReportLifecycleService');
+} = require('../src/modules/reports/adminReportLifecycleService');
 
 test('normalizes admin lifecycle sources without trusting collection flags', () => {
   const archived = normalizeReport({

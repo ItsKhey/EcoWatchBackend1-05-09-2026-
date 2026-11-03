@@ -1,11 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { pool } = require('../config/db');
-const adminNotificationPreferenceRepository = require('../repositories/adminNotificationPreferenceRepository');
-const notificationController = require('../controllers/notificationController');
-const announcementController = require('../controllers/announcementController');
-const announcementRepository = require('../repositories/announcementRepository');
+const { pool } = require('../src/config/db');
+const adminNotificationPreferenceRepository = require('../src/modules/notifications/adminNotificationPreferenceRepository');
+const notificationController = require('../src/modules/notifications/notificationController');
+const announcementController = require('../src/modules/announcements/announcementController');
+const announcementRepository = require('../src/modules/announcements/announcementRepository');
 
 const ADMIN_ID = 'ADM-PREF-TEST';
 const ADMIN_ALT = 'ADM-PREF-TEST-ALT';

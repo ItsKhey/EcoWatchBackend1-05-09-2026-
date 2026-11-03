@@ -1,10 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { pool } = require('../config/db');
-const notificationRepository = require('../repositories/notificationRepository');
-const announcementRepository = require('../repositories/announcementRepository');
-const notificationService = require('../services/notificationService');
+const { pool } = require('../src/config/db');
+const notificationRepository = require('../src/modules/notifications/notificationRepository');
+const announcementRepository = require('../src/modules/announcements/announcementRepository');
+const notificationService = require('../src/modules/notifications/notificationService');
 
 const ADMIN_ID = 'ADM-ANNOUNCE-NOTIFY-TEST';
 
@@ -29,7 +29,7 @@ const createResponse = () => ({
  * fan-out runs, exactly as it does for the Admin app.
  */
 const publishAnnouncement = async (overrides = {}) => {
-  const announcementController = require('../controllers/announcementController');
+  const announcementController = require('../src/modules/announcements/announcementController');
   const res = createResponse();
   let forwarded = null;
   await announcementController.createAnnouncement(

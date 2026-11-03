@@ -3,7 +3,7 @@
  * Reports why a detected cluster shows 0 reports and no preview photo.
  */
 require('dotenv').config();
-const { pool } = require('../config/db');
+const { pool } = require('../src/config/db');
 
 (async () => {
   try {

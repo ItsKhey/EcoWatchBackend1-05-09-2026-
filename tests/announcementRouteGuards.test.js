@@ -4,8 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 
-const { pool } = require('../config/db');
-const generateToken = require('../utils/generateToken');
+const { pool } = require('../src/config/db');
+const generateToken = require('../src/shared/generateToken');
 
 /**
  * Exercises the real route stack over a real socket.
@@ -19,9 +19,9 @@ const buildApp = () => {
   const express = require('express');
   const app = express();
   app.use(express.json());
-  app.use('/api/announcements', require('../routes/announcementRoutes'));
-  app.use('/api/notifications', require('../routes/notificationRoutes'));
-  app.use(require('../middleware/errorMiddleware').errorHandler);
+  app.use('/api/announcements', require('../src/modules/announcements/announcementRoutes'));
+  app.use('/api/notifications', require('../src/modules/notifications/notificationRoutes'));
+  app.use(require('../src/middleware/errorMiddleware').errorHandler);
   return app;
 };
 

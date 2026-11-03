@@ -1,10 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { pool } = require('../config/db');
-const announcementRepository = require('../repositories/announcementRepository');
-const announcementController = require('../controllers/announcementController');
-const { deleteExpiredAnnouncements } = require('../services/announcementCleanupService');
+const { pool } = require('../src/config/db');
+const announcementRepository = require('../src/modules/announcements/announcementRepository');
+const announcementController = require('../src/modules/announcements/announcementController');
+const { deleteExpiredAnnouncements } = require('../src/modules/announcements/announcementCleanupService');
 
 const ADMIN_ID = 'ADM-ANNOUNCE-EXPIRY-TEST';
 const RESIDENT_ID = 'RES-ANNOUNCE-EXPIRY-TEST';

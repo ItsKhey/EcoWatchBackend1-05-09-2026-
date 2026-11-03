@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const reportPhotoRepository = require('../repositories/reportPhotoRepository');
+const reportPhotoRepository = require('../src/modules/reports/reportPhotoRepository');
 const { buildPhotoList } = reportPhotoRepository;
 
 const url = (name) => `https://res.cloudinary.com/demo/image/upload/${name}.jpg`;

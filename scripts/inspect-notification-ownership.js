@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { pool } = require('../config/db');
+const { pool } = require('../src/config/db');
 
 /** Read-only inspection of the notifications ownership constraints. */
 async function main() {

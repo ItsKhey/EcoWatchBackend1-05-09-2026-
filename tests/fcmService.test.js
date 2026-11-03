@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseServiceAccountJson } = require('../services/fcmService');
+const { parseServiceAccountJson } = require('../src/shared/fcmService');
 
 test('parses escaped private key newlines from a service-account JSON value', () => {
   const previous = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;

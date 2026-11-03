@@ -1,17 +1,17 @@
 require('dotenv').config();
 
+const { requireConnectionString } = require('../src/config/database');
+
 const fs = require('fs/promises');
 const path = require('path');
-const { pool } = require('../config/db');
+const { pool } = require('../src/config/db');
 
 const MIGRATION_NAME = '003-normalize-admin-identifiers.sql';
 
 async function migrateAdminIdentifiers() {
-  if (!process.env.SUPABASE_DATABASE_URL) {
-    throw new Error('SUPABASE_DATABASE_URL is required to run this migration.');
-  }
+  requireConnectionString('this migration');
 
-  const migrationPath = path.join(__dirname, '..', 'migration', 'sql', MIGRATION_NAME);
+  const migrationPath = path.join(__dirname, '..', 'database', 'migrations', 'sql', MIGRATION_NAME);
   const sql = await fs.readFile(migrationPath, 'utf8');
   const client = await pool.connect();
 

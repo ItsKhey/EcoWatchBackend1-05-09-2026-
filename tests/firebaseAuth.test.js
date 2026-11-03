@@ -7,7 +7,7 @@ const {
   EMAIL_LINK_METHOD,
   RESET_LINK_COOLDOWN_SECONDS,
   NEUTRAL_RESET_MESSAGE,
-} = require('../controllers/firebaseAuthController');
+} = require('../src/modules/auth/firebaseAuthController');
 
 const {
   normalizeEmail,
@@ -15,9 +15,9 @@ const {
   requirePassword,
   requireUsername,
   requireOpaqueToken,
-} = require('../utils/authValidation');
+} = require('../src/modules/auth/authValidation');
 
-const authController = require('../controllers/authController');
+const authController = require('../src/modules/auth/authController');
 
 /*
  * Guards the properties this feature must not break:
@@ -52,7 +52,7 @@ test('login controller is still exported and takes username + password only', ()
 
 test('no Firebase credential is accepted by the login route', () => {
   const source = fs.readFileSync(
-    path.join(__dirname, '..', 'controllers', 'authController.js'),
+    path.join(__dirname, '..', 'src', 'modules', 'auth', 'authController.js'),
     'utf8'
   );
 
@@ -163,13 +163,13 @@ test('a registration cannot opt into the weaker flow by naming it', () => {
 
 test('verifyRegistrationSession is the only place a Firebase ID token is verified', () => {
   const files = [
-    'controllers/firebaseAuthController.js',
-    'controllers/authController.js',
-    'routes/authRoutes.js',
-    'middleware/authMiddleware.js',
-    'repositories/residentRepository.js',
-    'repositories/adminRepository.js',
-    'utils/generateToken.js',
+    'src/modules/auth/firebaseAuthController.js',
+    'src/modules/auth/authController.js',
+    'src/modules/auth/authRoutes.js',
+    'src/middleware/authMiddleware.js',
+    'src/modules/residents/residentRepository.js',
+    'src/modules/admin/adminRepository.js',
+    'src/shared/generateToken.js',
   ];
 
   for (const file of files) {
@@ -187,7 +187,7 @@ test('verifyRegistrationSession is the only place a Firebase ID token is verifie
   // The token is received by the controller and handed to the service. That is
   // the whole of its role: it is never trusted locally.
   const controller = fs.readFileSync(
-    path.join(__dirname, '..', 'controllers', 'firebaseAuthController.js'),
+    path.join(__dirname, '..', 'src', 'modules', 'auth', 'firebaseAuthController.js'),
     'utf8'
   );
   assert.match(controller, /verifyRegistrationSession/,
@@ -197,7 +197,7 @@ test('verifyRegistrationSession is the only place a Firebase ID token is verifie
 test('the App Link continue URL is declared by the app, not the backend', () => {
   // Delivery is now entirely on the device, so the backend holds no continue URL.
   const service = fs.readFileSync(
-    path.join(__dirname, '..', 'services', 'firebaseAuthService.js'),
+    path.join(__dirname, '..', 'src', 'modules', 'auth', 'firebaseAuthService.js'),
     'utf8'
   );
 
@@ -418,7 +418,7 @@ test('a real-length Firebase ID token is accepted', () => {
   const {
     requireFirebaseIdToken,
     FIREBASE_ID_TOKEN_MAX_LENGTH,
-  } = require('../utils/authValidation');
+  } = require('../src/modules/auth/authValidation');
 
   /*
    * A Firebase ID token is a JWT and is routinely 700-1000+ characters. It was
@@ -463,7 +463,7 @@ test('the ID token bound is far above the short-token bound on purpose', () => {
   const {
     FIREBASE_ID_TOKEN_MAX_LENGTH,
     OPAQUE_TOKEN_MAX_LENGTH,
-  } = require('../utils/authValidation');
+  } = require('../src/modules/auth/authValidation');
 
   assert.ok(FIREBASE_ID_TOKEN_MAX_LENGTH > OPAQUE_TOKEN_MAX_LENGTH,
     'a JWT cannot be validated against the oobCode bound');

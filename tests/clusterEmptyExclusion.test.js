@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const clusterRepository = require('../repositories/clusterRepository');
+const clusterRepository = require('../src/modules/reports/clusterRepository');
 
 /**
  * Cluster matching is coordinate-based, so a cluster row that outlives its

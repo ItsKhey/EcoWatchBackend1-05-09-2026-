@@ -1,11 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { pool } = require('../config/db');
-const reportRepository = require('../repositories/reportRepository');
-const historyRepository = require('../repositories/historyRepository');
-const reportController = require('../controllers/reportController');
-const { extractPublicId } = require('../services/cloudinaryService');
+const { pool } = require('../src/config/db');
+const reportRepository = require('../src/modules/reports/reportRepository');
+const historyRepository = require('../src/modules/history/historyRepository');
+const reportController = require('../src/modules/reports/reportController');
+const { extractPublicId } = require('../src/shared/cloudinaryService');
 
 const RESIDENT_ID = 'RES-EDIT-TEST';
 const OTHER_RESIDENT_ID = 'RES-EDIT-OTHER';

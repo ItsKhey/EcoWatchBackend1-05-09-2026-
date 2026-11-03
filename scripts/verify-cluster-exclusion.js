@@ -3,8 +3,8 @@
  * Run after the empty-cluster exclusion fix to confirm real data behaves.
  */
 require('dotenv').config();
-const { pool } = require('../config/db');
-const clusterRepository = require('../repositories/clusterRepository');
+const { pool } = require('../src/config/db');
+const clusterRepository = require('../src/modules/reports/clusterRepository');
 
 const LAT = 7.8321;
 const LON = 125.0176;

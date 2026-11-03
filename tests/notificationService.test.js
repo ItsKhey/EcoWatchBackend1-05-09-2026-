@@ -9,7 +9,7 @@ const {
   isBroadcastEventType,
   normalizeEventType,
   validateCreateEventRequest,
-} = require('../services/notificationService');
+} = require('../src/modules/notifications/notificationService');
 
 const report = {
   report_id: 'REP-001',
@@ -28,9 +28,18 @@ test('server owns every required report notification message', () => {
       'REPORT_DENIED',
       'REPORT_COMPLETED',
       'NEW_REPORT',
+      'REPORT_DUPLICATE',
       'ANNOUNCEMENT',
     ]
   );
+
+  // The duplicate copy must not read as a rejection: a resident whose report
+  // matched an existing one still deserves to know why it was not processed.
+  const duplicate = eventContent(NOTIFICATION_TYPES.REPORT_DUPLICATE, report);
+  assert.equal(duplicate.title, 'Report Update');
+  assert.match(duplicate.message, /duplicate/i);
+  assert.doesNotMatch(duplicate.message, /rejected/i);
+  assert.match(duplicate.message, /already been submitted/i);
 
   // ANNOUNCEMENT is excluded on purpose: it is a broadcast with no report, so
   // its copy comes from announcementContent rather than this report-shaped

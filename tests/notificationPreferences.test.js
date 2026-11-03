@@ -1,12 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { pool } = require('../config/db');
-const notificationPreferenceRepository = require('../repositories/notificationPreferenceRepository');
-const notificationRepository = require('../repositories/notificationRepository');
-const notificationController = require('../controllers/notificationController');
-const announcementController = require('../controllers/announcementController');
-const fcmService = require('../services/fcmService');
+const { pool } = require('../src/config/db');
+const notificationPreferenceRepository = require('../src/modules/notifications/notificationPreferenceRepository');
+const notificationRepository = require('../src/modules/notifications/notificationRepository');
+const notificationController = require('../src/modules/notifications/notificationController');
+const announcementController = require('../src/modules/announcements/announcementController');
+const fcmService = require('../src/shared/fcmService');
 
 const RESIDENT_A = 'RES-PREF-TEST-A';
 const RESIDENT_B = 'RES-PREF-TEST-B';

@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { pool } = require('../config/db');
+const { pool } = require('../src/config/db');
 
 /**
  * Read-only guard for the Phase 3A migration: confirms the notifications table

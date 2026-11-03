@@ -4,10 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 
-const { pool } = require('../config/db');
-const generateToken = require('../utils/generateToken');
-const announcementRepository = require('../repositories/announcementRepository');
-const announcementController = require('../controllers/announcementController');
+const { pool } = require('../src/config/db');
+const generateToken = require('../src/shared/generateToken');
+const announcementRepository = require('../src/modules/announcements/announcementRepository');
+const announcementController = require('../src/modules/announcements/announcementController');
 
 const RESIDENT_A = 'RES-DELIVER-A';
 const RESIDENT_B = 'RES-DELIVER-B';
@@ -43,8 +43,8 @@ const buildApp = () => {
   const express = require('express');
   const app = express();
   app.use(express.json());
-  app.use('/api/announcements', require('../routes/announcementRoutes'));
-  app.use(require('../middleware/errorMiddleware').errorHandler);
+  app.use('/api/announcements', require('../src/modules/announcements/announcementRoutes'));
+  app.use(require('../src/middleware/errorMiddleware').errorHandler);
   return app;
 };
 

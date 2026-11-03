@@ -28,6 +28,16 @@ desktop.ini
 *.sqlite
 *.sqlite3
 
+# Uploaded report and profile photos written by the local image storage
+# provider. Runtime content, not source: the folder is created on boot and
+# images are rebuilt by the app that uploaded them.
+uploads/*
+!uploads/.gitkeep
+
+# Database dumps created while moving a database between machines
+*.dump
+*.backup
+
 # Credentials and certificates
 secrets/
 credentials/

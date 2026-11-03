@@ -1,7 +1,7 @@
 const assert = require('assert');
 const {
   validateReportAssignmentPayload,
-} = require('../utils/reportAssignmentValidation');
+} = require('../src/modules/reports/reportAssignmentValidation');
 
 const parsed = validateReportAssignmentPayload({
   personnelId: 'pers-0007',

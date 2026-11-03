@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { mapAssignmentReport } = require('../services/reportAssignmentService');
+const { mapAssignmentReport } = require('../src/modules/reports/reportAssignmentService');
 
 test('assignment responses retain the authoritative report created_at', () => {
   const result = mapAssignmentReport({

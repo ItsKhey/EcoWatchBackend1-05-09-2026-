@@ -10,12 +10,12 @@ require('dotenv').config();
  *
  * Usage: node scripts/rehearse-phase-3a.js
  */
-const { pool } = require('../config/db');
-const adminRepository = require('../repositories/adminRepository');
-const notificationRepository = require('../repositories/notificationRepository');
-const trashNotificationRepository = require('../repositories/trashNotificationRepository');
-const fcmService = require('../services/fcmService');
-const { NOTIFICATION_TYPES } = require('../services/notificationService');
+const { pool } = require('../src/config/db');
+const adminRepository = require('../src/modules/admin/adminRepository');
+const notificationRepository = require('../src/modules/notifications/notificationRepository');
+const trashNotificationRepository = require('../src/modules/notifications/trashNotificationRepository');
+const fcmService = require('../src/shared/fcmService');
+const { NOTIFICATION_TYPES } = require('../src/modules/notifications/notificationService');
 
 let createdNotificationId = null;
 let adminId = null;

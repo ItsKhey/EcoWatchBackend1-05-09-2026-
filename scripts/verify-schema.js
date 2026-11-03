@@ -1,11 +1,10 @@
 require('dotenv').config({ quiet: true });
 
+const { poolOptions } = require('../src/config/database');
+
 const { Pool } = require('pg');
 
-const pool = new Pool({
-  connectionString: process.env.SUPABASE_DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const pool = new Pool(poolOptions());
 
 const REQUIRED_COLUMNS = [
   ['admins', 'last_active'],

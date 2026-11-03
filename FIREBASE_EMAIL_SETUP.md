@@ -77,6 +77,13 @@ accounts; check the quota is adequate before onboarding many real residents.
    branded "Firebase". The action URL is supplied per-send by the app in
    `ActionCodeSettings`, so leave that field alone.
 
+   The URL inside the email is Firebase's redirector,
+   `…/__/auth/links?link=…/__/auth/action?mode=…&oobCode=…`, not the continue URL.
+   The app claims that path as well (`AndroidManifest.xml`) and unwraps the
+   `link` parameter, so tapping the email goes straight to the in-app screen.
+   Do **not** try to set the console's *Customize action URL* to `/finishSignUp`:
+   Firebase rejects that field with `EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED`.
+
 4. **Confirm the service account is the one you already have.** The same
    `FIREBASE_SERVICE_ACCOUNT_JSON` that powers Cloud Messaging also powers
    verification and reset.
@@ -95,8 +102,9 @@ firebase deploy --only hosting
 ```
 
 When the registered SHA-256 matches, Android verifies the link and opens EcoWatch
-directly, and **this page is never rendered**. It exists so a failure degrades
-into a working hand-off rather than a 404.
+directly, so neither Firebase's redirector nor this page is rendered. The page
+exists so a link opened on a device without the app, or with App Links not
+verified, degrades into a working hand-off rather than a 404.
 
 ---
 

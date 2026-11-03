@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { protectResident } = require('../middleware/authMiddleware');
+const { protectResident } = require('../src/middleware/authMiddleware');
 
 test('protectResident accepts only a normal resident identity', () => {
   const req = {

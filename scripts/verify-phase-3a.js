@@ -7,11 +7,11 @@ require('dotenv').config();
  * how many admin devices are currently eligible to receive a NEW_REPORT
  * broadcast. Sends nothing.
  */
-const { pool } = require('../config/db');
-const adminRoutes = require('../routes/adminRoutes');
-const notificationRoutes = require('../routes/notificationRoutes');
-const { findAllAdminFcmTokens } = require('../services/fcmService');
-const { isFirebaseConfigured } = require('../services/fcmService');
+const { pool } = require('../src/config/db');
+const adminRoutes = require('../src/modules/admin/adminRoutes');
+const notificationRoutes = require('../src/modules/notifications/notificationRoutes');
+const { findAllAdminFcmTokens } = require('../src/shared/fcmService');
+const { isFirebaseConfigured } = require('../src/shared/fcmService');
 
 const routePaths = (router) => {
   const paths = [];

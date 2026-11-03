@@ -6,7 +6,7 @@ const {
   ADMIN_TABLES,
   isAdminId,
   tablesFor,
-} = require('../utils/notificationTables');
+} = require('../src/shared/notificationTables');
 
 /**
  * Phase 3A — the notification store resolves its tables from the owner ID. If

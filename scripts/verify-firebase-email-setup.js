@@ -12,8 +12,8 @@ require('dotenv').config();
  * opened the link. All three look identical from the app.
  */
 
-const { pool } = require('../config/db');
-const firebaseAuthService = require('../services/firebaseAuthService');
+const { pool } = require('../src/config/db');
+const firebaseAuthService = require('../src/modules/auth/firebaseAuthService');
 
 const EXPECTED_PACKAGE = 'com.example.myecowatch1';
 const EXPECTED_HOST = 'ecowatch1-4445f.firebaseapp.com';

@@ -1,5 +1,7 @@
 require('dotenv').config();
 
+const { poolOptions, requireConnectionString } = require('../src/config/database');
+
 const assert = require('assert');
 const crypto = require('crypto');
 const net = require('net');
@@ -12,10 +14,7 @@ const { Pool } = require('pg');
 const root = require('path').resolve(__dirname, '..');
 const port = await getFreePort();
 const baseUrl = `http://127.0.0.1:${port}`;
-const pool = new Pool({
-  connectionString: process.env.SUPABASE_DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const pool = new Pool(poolOptions());
 
 let serverProcess;
 let personnelId;
@@ -38,7 +37,7 @@ const stopServer = () => {
 };
 
 try {
-  assert(process.env.SUPABASE_DATABASE_URL, 'SUPABASE_DATABASE_URL is required');
+  requireConnectionString('this script');
   assert(process.env.JWT_SECRET, 'JWT_SECRET is required');
 
   const adminResult = await pool.query(

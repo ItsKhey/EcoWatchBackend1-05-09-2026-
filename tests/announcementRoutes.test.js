@@ -4,11 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 
-const { pool } = require('../config/db');
-const generateToken = require('../utils/generateToken');
-const announcementController = require('../controllers/announcementController');
-const { protect, protectResident } = require('../middleware/authMiddleware');
-const { admin } = require('../middleware/adminMiddleware');
+const { pool } = require('../src/config/db');
+const generateToken = require('../src/shared/generateToken');
+const announcementController = require('../src/modules/announcements/announcementController');
+const { protect, protectResident } = require('../src/middleware/authMiddleware');
+const { admin } = require('../src/middleware/adminMiddleware');
 
 /**
  * Exercises the real route stack over a real socket, so the admin-only guard
@@ -22,8 +22,8 @@ const buildApp = () => {
   // The real stack mounts the error handler last; without it every thrown
   // error would surface as an HTML stack page and the status codes would be
   // unobservable.
-  app.use('/api/announcements', require('../routes/announcementRoutes'));
-  app.use(require('../middleware/errorMiddleware').errorHandler);
+  app.use('/api/announcements', require('../src/modules/announcements/announcementRoutes'));
+  app.use(require('../src/middleware/errorMiddleware').errorHandler);
   return app;
 };
 
