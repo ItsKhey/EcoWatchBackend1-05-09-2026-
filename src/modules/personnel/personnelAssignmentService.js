@@ -305,6 +305,30 @@ const crewByReportId = async (reportIds, queryable) => {
 };
 
 /**
+ * Adds the report's cleaning timeline and its current-cycle revision flag.
+ *
+ * <p>The revision flag and the timeline are recorded in {@code report_histories}
+ * rather than on the assignment row, so they are attached here instead of being
+ * selected by {@code presentTask}. The flag answers "was this assignment sent
+ * back for revision", which is what the history tab filters on; the timeline
+ * carries the {@code REVISION_REQUESTED} timestamp the detail screen shows.
+ */
+const attachTaskHistory = (task, timeline, revisionRequested) => {
+  if (!task) return task;
+  return {
+    ...task,
+    revisionRequested: Boolean(revisionRequested),
+    report: task.report
+      ? {
+          ...task.report,
+          revisionRequested: Boolean(revisionRequested),
+          timeline: Array.isArray(timeline) ? timeline : [],
+        }
+      : task.report,
+  };
+};
+
+/**
  * {@link presentTask} plus the named crew that was dispatched with it.
  *
  * <p>Every route that returns a task goes through here: the detail screen
@@ -316,8 +340,18 @@ const presentTaskWithCrew = async (row, evidenceRows, personnelId, queryable) =>
   const task = presentTask(row, evidenceRows, personnelId);
   if (!task) return task;
 
-  const crews = await crewByReportId([task.reportId], queryable);
-  return { ...task, assignedCrew: crews.get(task.reportId) || [] };
+  const reportIds = [task.reportId];
+  const [crews, timelines, revisionIds] = await Promise.all([
+    crewByReportId(reportIds, queryable),
+    historyRepository.findTaskTimelinesByReportIds(reportIds, queryable),
+    historyRepository.findRevisionRequestedReportIds(reportIds, queryable),
+  ]);
+
+  return attachTaskHistory(
+    { ...task, assignedCrew: crews.get(task.reportId) || [] },
+    timelines.get(task.reportId) || [],
+    revisionIds.has(task.reportId)
+  );
 };
 
 const findTaskOrThrow = async (assignmentId, personnelId, db) => {
@@ -398,12 +432,21 @@ const listTasks = async (personnelId, query = {}) => {
   }
 
   const total = rows.length ? Number(rows[0].total_count) : 0;
-  const crewsByReport = await crewByReportId(rows.map((row) => row.report_id));
+  const reportIds = rows.map((row) => row.report_id);
+  const [crewsByReport, timelines, revisionIds] = await Promise.all([
+    crewByReportId(reportIds),
+    historyRepository.findTaskTimelinesByReportIds(reportIds),
+    historyRepository.findRevisionRequestedReportIds(reportIds),
+  ]);
   return {
-    tasks: rows.map((row) => ({
-      ...presentTask(row, evidenceByAssignment.get(row.assignment_id) || [], id),
-      assignedCrew: crewsByReport.get(row.report_id) || [],
-    })),
+    tasks: rows.map((row) => attachTaskHistory(
+      {
+        ...presentTask(row, evidenceByAssignment.get(row.assignment_id) || [], id),
+        assignedCrew: crewsByReport.get(row.report_id) || [],
+      },
+      timelines.get(row.report_id) || [],
+      revisionIds.has(row.report_id)
+    )),
     pagination: {
       page,
       limit,
