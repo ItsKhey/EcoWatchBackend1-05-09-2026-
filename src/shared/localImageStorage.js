@@ -19,7 +19,7 @@ const path = require('path');
  * hosted deployment without a rewrite.
  */
 
-const UPLOADS_ROOT = path.resolve(__dirname, '..', 'uploads');
+const UPLOADS_ROOT = path.resolve(__dirname, '..', '..', 'uploads');
 const PUBLIC_PREFIX = '/uploads/';
 
 // Multer writes report and profile photos to the same folder, so the folder
