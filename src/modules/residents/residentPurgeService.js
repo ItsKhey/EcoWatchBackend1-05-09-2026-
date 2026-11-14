@@ -116,9 +116,8 @@ const startResidentPurgeJob = () => {
     return;
   }
 
-  // Daily at 4:00 AM. An hour clear of the report (2:00 AM) and announcement
-  // (3:00 AM) cleanups, so the three jobs never contend for the same rows or the
-  // same connections at once.
+  // Daily at 4:00 AM. An hour clear of the report cleanup (2:00 AM) so the two
+  // jobs never contend for the same rows or the same connections at once.
   cron.schedule('0 4 * * *', () => {
     permanentlyDeleteExpiredResidentAccounts()
       .then(({ purged, failed }) => {

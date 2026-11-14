@@ -76,24 +76,6 @@ test('cleaning progress is filed under Cleaning', () => {
   }
 });
 
-test('announcement events are filed under Announcements', () => {
-  const announcementActions = [
-    'ANNOUNCEMENT_CREATED',
-    'ANNOUNCEMENT_PUBLISHED',
-    'ANNOUNCEMENT_EDITED',
-    'ANNOUNCEMENT_UNPUBLISHED',
-    'ANNOUNCEMENT_DELETED',
-  ];
-
-  for (const action of announcementActions) {
-    assert.equal(
-      categoryFor(action),
-      CATEGORY.ANNOUNCEMENTS,
-      `${action} should be Announcements`
-    );
-  }
-});
-
 test('ESP account events are filed under Account', () => {
   const accountActions = [
     'PERSONNEL_CREATED',
@@ -123,7 +105,7 @@ test('every mapped action resolves to the category it was mapped to', () => {
   }
 });
 
-test('the five groups are disjoint', () => {
+test('the four groups are disjoint', () => {
   // Each group is asserted separately above; this checks they do not overlap, so
   // one action cannot be claimed by two tabs. Overlap would make the row count
   // in two pill labels while the row itself appears under whichever tab won.
@@ -136,8 +118,6 @@ test('the five groups are disjoint', () => {
     ['CLEANING_STARTED', 'CLEANING_COMPLETED', 'BEFORE_EVIDENCE_SUBMITTED',
       'AFTER_EVIDENCE_SUBMITTED', 'CLEANING_INCOMPLETE', 'CLEANING_VERIFIED',
       'REVISION_REQUESTED'],
-    ['ANNOUNCEMENT_CREATED', 'ANNOUNCEMENT_PUBLISHED', 'ANNOUNCEMENT_EDITED',
-      'ANNOUNCEMENT_UNPUBLISHED', 'ANNOUNCEMENT_DELETED'],
     ['PERSONNEL_CREATED', 'PERSONNEL_UPDATED', 'PERSONNEL_ACTIVATED',
       'PERSONNEL_DEACTIVATED', 'PERSONNEL_DELETED', 'PERSONNEL_RESTORED',
       'PERSONNEL_PASSWORD_RESET'],
@@ -182,13 +162,12 @@ test('an unknown action falls back to Reports rather than vanishing', () => {
 });
 
 test('the category set matches the database constraint exactly', () => {
-  // report_histories_category_ck in migration/sql/024-admin-history.sql admits
-  // exactly these five. A category added here without widening the constraint
+  // report_histories_category_ck is redefined by migration/sql/030 to admit
+  // exactly these four. A category added here without widening the constraint
   // would be rejected at insert time, failing the very action it was meant to
   // record.
   assert.deepEqual(Object.values(CATEGORY).sort(), [
     'ACCOUNT',
-    'ANNOUNCEMENTS',
     'ASSIGNMENTS',
     'CLEANING',
     'REPORTS',

@@ -241,7 +241,7 @@ const getResidentReportStatistics = async (req, res, next) => {
 /**
  * Records a reporter account-management decision in the Admin History trail.
  *
- * Best-effort for the same reason as the personnel and announcement trails: the
+ * Best-effort for the same reason as the personnel trail: the
  * account change is already committed and the administrator has seen it
  * accepted, so a failed audit write is logged rather than turned into a failed
  * action. The worst case is one missing row; the worst case of throwing would be

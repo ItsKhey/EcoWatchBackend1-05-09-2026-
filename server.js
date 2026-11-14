@@ -12,7 +12,6 @@ const { logger } = require('./src/shared/logger');
 const { notFound, errorHandler } = require('./src/middleware/errorMiddleware');
 const { startHistoryCleanupJob } = require('./src/modules/history/historyCleanupService');
 const { startReportCleanupJob } = require('./src/modules/reports/reportCleanupService');
-const { startAnnouncementCleanupJob } = require('./src/modules/announcements/announcementCleanupService');
 const { startResidentPurgeJob } = require('./src/modules/residents/residentPurgeService');
 const { isFirebaseConfigured } = require('./src/shared/fcmService');
 const { isFirebaseAuthConfigured } = require('./src/config/firebaseAdmin');
@@ -89,14 +88,12 @@ app.use('/api/notifications', require('./src/modules/notifications/notificationR
 app.use('/api/admin', require('./src/modules/admin/adminRoutes'));
 app.use('/api/personnel', require('./src/modules/personnel/personnelRoutes'));
 app.use('/api/vehicles', require('./src/modules/vehicles/vehicleRoutes'));
-app.use('/api/announcements', require('./src/modules/announcements/announcementRoutes'));
 
 app.use(notFound);
 app.use(errorHandler);
 
 startHistoryCleanupJob();
 startReportCleanupJob();
-startAnnouncementCleanupJob();
 startResidentPurgeJob();
 const PORT = process.env.PORT || 5000;
 // 0.0.0.0 by default so a phone on the same WiFi can reach the server. The

@@ -13,7 +13,6 @@ const DEFAULT_PREFERENCES = Object.freeze({
   reportStatusUpdates: true,
   reportCompleted: true,
   reportDenied: true,
-  cenroAnnouncements: true,
   securityAlerts: true,
   soundEnabled: true,
   vibrationEnabled: true,
@@ -26,7 +25,6 @@ const COLUMNS = Object.freeze({
   reportStatusUpdates: 'report_status_updates',
   reportCompleted: 'report_completed',
   reportDenied: 'report_denied',
-  cenroAnnouncements: 'cenro_announcements',
   securityAlerts: 'security_alerts',
   soundEnabled: 'sound_enabled',
   vibrationEnabled: 'vibration_enabled',
@@ -44,7 +42,6 @@ const CAMEL_TO_SNAKE = Object.freeze({
   report_status_updates: 'reportStatusUpdates',
   report_completed: 'reportCompleted',
   report_denied: 'reportDenied',
-  cenro_announcements: 'cenroAnnouncements',
   security_alerts: 'securityAlerts',
   sound_enabled: 'soundEnabled',
   vibration_enabled: 'vibrationEnabled',
@@ -128,7 +125,6 @@ const CATEGORY_BY_TYPE = Object.freeze({
   REPORT_DENIED: 'reportDenied',
   REPORT_DUPLICATE: 'reportDenied',
   REPORT_COMPLETED: 'reportCompleted',
-  ANNOUNCEMENT: 'cenroAnnouncements',
 });
 
 /**
@@ -148,57 +144,10 @@ function allowsPush(preferences, type) {
   return preferences[category] !== false;
 }
 
-/**
- * Everyone an announcement should be recorded for, with push eligibility.
- *
- * <p>Returns ALL active residents, not just the ones holding a device token.
- * Scoping this to token holders meant a resident who had not granted the
- * permission, or had not opened the app since installing, never got the
- * in-app notification row at all. The token is optional here: the row is
- * written either way, and a missing token only means there is nothing to push to
- * yet.
- *
- * <p>`pushEnabled` is COALESCEd to true so a resident with no preferences row
- * still receives pushes.
- *
- * <p>Account eligibility is decided by `residents.status` alone. There is no
- * soft-delete column on that table; a removed account is blocked through the
- * same status list the sign-in path uses.
- */
-async function findAnnouncementAudience(queryable = pool) {
-  const result = await queryable.query(
-    `
-    SELECT
-      r.resident_id,
-      r.fcm_token,
-      COALESCE(p.master_enabled AND p.cenro_announcements, true) AS push_enabled
-    FROM residents r
-    LEFT JOIN notification_preferences p ON p.resident_id = r.resident_id
-    WHERE lower(trim(COALESCE(r.role, 'RESIDENT'))) = 'resident'
-      AND lower(trim(COALESCE(r.status, 'AVAILABLE'))) NOT IN (
-        'disabled', 'inactive', 'blocked', 'suspended', 'deleted'
-      )
-    ORDER BY r.resident_id
-    `
-  );
-
-  return result.rows.map((row) => {
-    const token = typeof row.fcm_token === 'string' && row.fcm_token.trim().length > 0
-      ? row.fcm_token.trim()
-      : null;
-    return {
-      residentId: row.resident_id,
-      token,
-      pushEnabled: row.push_enabled !== false && token !== null,
-    };
-  });
-}
-
 module.exports = {
   DEFAULT_PREFERENCES,
   CAMEL_TO_SNAKE,
   findByResidentId,
   upsert,
-  findAnnouncementAudience,
   allowsPush,
 };

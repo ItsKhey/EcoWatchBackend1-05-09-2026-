@@ -128,7 +128,7 @@ async function createNotification({
  * Rows per multi-VALUES statement when fanning a broadcast out.
  *
  * <p>Five bound parameters per row, so this stays far below the 65535 parameter
- * ceiling a statement is allowed. Big enough that a city-wide announcement is a
+ * ceiling a statement is allowed. Big enough that a large fan-out is a
  * handful of round trips instead of thousands.
  */
 const BROADCAST_INSERT_CHUNK = 500;

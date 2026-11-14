@@ -2,7 +2,7 @@ const historyRepository =
   require('./historyRepository');
 
 /**
- * The five tabs the Admin History screen groups by.
+ * The four tabs the Admin History screen groups by.
  *
  * Held here rather than only in the client so the API rejects an unknown tab
  * instead of quietly returning an empty feed, which would look like "no records
@@ -13,7 +13,6 @@ const ADMIN_CATEGORIES = Object.freeze([
   'REPORTS',
   'ASSIGNMENTS',
   'CLEANING',
-  'ANNOUNCEMENTS',
   'ACCOUNT',
 ]);
 

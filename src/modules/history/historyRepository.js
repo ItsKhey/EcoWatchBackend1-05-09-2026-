@@ -159,8 +159,8 @@ async function findTaskTimelinesByReportIds(reportIds, queryable = pool) {
  *
  * The admin-facing columns are optional. A report-scoped row leaves them null and
  * keeps being attributed to the resident it concerns, exactly as before this
- * migration. A row with no report at all - an announcement, an account change -
- * supplies a subject instead, and its residentId may be null because there is no
+ * migration. A row with no report at all - an account change - supplies a
+ * subject instead, and its residentId may be null because there is no
  * resident to attribute it to.
  *
  * `category` is stored rather than derived because several action constants
@@ -475,7 +475,6 @@ async function countByCategoryForAdmin() {
     REPORTS: 0,
     ASSIGNMENTS: 0,
     CLEANING: 0,
-    ANNOUNCEMENTS: 0,
     ACCOUNT: 0,
   };
 
@@ -495,7 +494,7 @@ async function countByCategoryForAdmin() {
  * Trashes a history row identified by its server history_id.
  *
  * Scoped to the id alone rather than to a resident: an administrator manages the
- * audit trail, and an announcement or account record has no resident to match on.
+ * audit trail, and an account record has no resident to match on.
  * The route layer restricts the caller to admins.
  */
 async function softDeleteById(historyId) {

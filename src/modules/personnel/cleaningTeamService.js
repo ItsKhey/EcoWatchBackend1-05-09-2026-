@@ -60,6 +60,7 @@ const presentTeam = (row, members = null) => {
     updatedByAdminId: row.updated_by_admin_id || null,
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null,
+    lastCollectionAt: row.last_collection_at || null,
     members: members
       ? members.map((member) => ({
         personnelId: member.personnelId,

@@ -173,6 +173,7 @@ const mapPersonnel = (personnel) => {
     isDisabled: personnel.enabled === false,
     isDeleted: Boolean(personnel.deleted_at),
     lastActive: personnel.last_active || null,
+    lastCollectionAt: personnel.last_collection_at || null,
     currentAssignment: mapCurrentAssignment(personnel),
     currentAssignmentText: personnel.current_assignment || null,
     current_assignment: personnel.current_assignment || null,

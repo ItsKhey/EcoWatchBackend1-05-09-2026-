@@ -31,6 +31,7 @@ const PERSONNEL_SELECT_FIELDS = `
   p.deleted_by_admin_id,
   p.created_at,
   p.updated_at,
+  last_collection.last_collection_at,
   r.title AS assignment_title,
   r.category AS assignment_category,
   r.description AS assignment_description,
@@ -63,6 +64,12 @@ const PERSONNEL_FROM = `
     ORDER BY COALESCE(t.is_deleted, false) ASC, t.team_name ASC
     LIMIT 1
   ) AS team_membership ON true
+  LEFT JOIN LATERAL (
+    SELECT MAX(pa.completed_at) AS last_collection_at
+    FROM personnel_assignments pa
+    WHERE pa.personnel_id = p.personnel_id
+      AND pa.status = 'COMPLETED'
+  ) AS last_collection ON true
 `;
 
 const PERSONNEL_SELECT = `SELECT ${PERSONNEL_SELECT_FIELDS} ${PERSONNEL_FROM}`;

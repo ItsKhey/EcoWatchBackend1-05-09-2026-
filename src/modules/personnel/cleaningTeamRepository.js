@@ -53,7 +53,8 @@ async function listTeams({ includeDeleted = false } = {}, queryable) {
       parent.team_name AS parent_team_name,
       leader.first_name AS leader_first_name,
       leader.last_name AS leader_last_name,
-      COALESCE(member_counts.member_count, 0) AS member_count
+      COALESCE(member_counts.member_count, 0) AS member_count,
+      last_collection.last_collection_at
     FROM cleaning_teams t
     LEFT JOIN cleaning_teams parent ON parent.team_id = t.parent_team_id
     LEFT JOIN personnel_accounts leader ON leader.personnel_id = t.leader_personnel_id
@@ -66,6 +67,12 @@ async function listTeams({ includeDeleted = false } = {}, queryable) {
       WHERE p.deleted_at IS NULL
       GROUP BY ctm.team_id
     ) AS member_counts ON member_counts.team_id = t.team_id
+    LEFT JOIN LATERAL (
+      SELECT MAX(pa.completed_at) AS last_collection_at
+      FROM personnel_assignments pa
+      WHERE pa.assigned_team_id = t.team_id
+        AND pa.status = 'COMPLETED'
+    ) AS last_collection ON true
     WHERE ($1::boolean = true OR COALESCE(t.is_deleted, false) = false)
     ORDER BY t.team_name ASC
     `,
@@ -152,7 +159,8 @@ async function findTeamById(teamId, queryable) {
       parent.team_name AS parent_team_name,
       leader.first_name AS leader_first_name,
       leader.last_name AS leader_last_name,
-      COALESCE(member_counts.member_count, 0) AS member_count
+      COALESCE(member_counts.member_count, 0) AS member_count,
+      last_collection.last_collection_at
     FROM cleaning_teams t
     LEFT JOIN cleaning_teams parent ON parent.team_id = t.parent_team_id
     LEFT JOIN personnel_accounts leader ON leader.personnel_id = t.leader_personnel_id
@@ -165,6 +173,12 @@ async function findTeamById(teamId, queryable) {
       WHERE p.deleted_at IS NULL
       GROUP BY ctm.team_id
     ) AS member_counts ON member_counts.team_id = t.team_id
+    LEFT JOIN LATERAL (
+      SELECT MAX(pa.completed_at) AS last_collection_at
+      FROM personnel_assignments pa
+      WHERE pa.assigned_team_id = t.team_id
+        AND pa.status = 'COMPLETED'
+    ) AS last_collection ON true
     WHERE t.team_id = $1
     LIMIT 1
     `,

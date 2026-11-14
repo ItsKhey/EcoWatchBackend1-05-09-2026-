@@ -18,7 +18,6 @@ src/
 | --- | --- |
 | `auth` | Resident/admin/personnel login, registration, OTP, Firebase email verification, password reset |
 | `admin` | Administrator directory, admin routes, admin audit trail |
-| `announcements` | Announcement publishing, listing, expiry cleanup |
 | `history` | Report/account history reads and history retention cleanup |
 | `notifications` | Resident/admin notification center, preferences, FCM push delivery |
 | `personnel` | Personnel accounts, cleaning teams, task assignments, personnel notifications |

@@ -15,12 +15,10 @@ const CATEGORY = Object.freeze({
   REPORTS: 'REPORTS',
   ASSIGNMENTS: 'ASSIGNMENTS',
   CLEANING: 'CLEANING',
-  ANNOUNCEMENTS: 'ANNOUNCEMENTS',
   ACCOUNT: 'ACCOUNT',
 });
 
 const SUBJECT_TYPE = Object.freeze({
-  ANNOUNCEMENT: 'ANNOUNCEMENT',
   PERSONNEL: 'PERSONNEL',
   // A reporter account has no report to join to either, so a credential reset
   // or an account disable is filed against the reporter. Constrained by
@@ -67,13 +65,6 @@ const ACTION_CATEGORY = Object.freeze({
   CLEANING_INCOMPLETE: CATEGORY.CLEANING,
   CLEANING_VERIFIED: CATEGORY.CLEANING,
   REVISION_REQUESTED: CATEGORY.CLEANING,
-
-  // --- Announcements -------------------------------------------------------
-  ANNOUNCEMENT_CREATED: CATEGORY.ANNOUNCEMENTS,
-  ANNOUNCEMENT_PUBLISHED: CATEGORY.ANNOUNCEMENTS,
-  ANNOUNCEMENT_EDITED: CATEGORY.ANNOUNCEMENTS,
-  ANNOUNCEMENT_UNPUBLISHED: CATEGORY.ANNOUNCEMENTS,
-  ANNOUNCEMENT_DELETED: CATEGORY.ANNOUNCEMENTS,
 
   // --- ESP account management ---------------------------------------------
   PERSONNEL_CREATED: CATEGORY.ACCOUNT,

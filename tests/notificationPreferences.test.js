@@ -5,13 +5,9 @@ const { pool } = require('../src/config/db');
 const notificationPreferenceRepository = require('../src/modules/notifications/notificationPreferenceRepository');
 const notificationRepository = require('../src/modules/notifications/notificationRepository');
 const notificationController = require('../src/modules/notifications/notificationController');
-const announcementController = require('../src/modules/announcements/announcementController');
-const fcmService = require('../src/shared/fcmService');
 
 const RESIDENT_A = 'RES-PREF-TEST-A';
 const RESIDENT_B = 'RES-PREF-TEST-B';
-const RESIDENT_C = 'RES-PREF-TEST-C';
-const ADMIN_ID = 'ADM-PREF-TEST';
 
 const FCM_TOKEN_A = 'token-for-preference-test-resident-a-000000000000';
 const FCM_TOKEN_B = 'token-for-preference-test-resident-b-000000000000';
@@ -48,13 +44,6 @@ const residentRequest = (body) => ({
   query: {},
   auth: { residentId: RESIDENT_A },
   resident: { resident_id: RESIDENT_A },
-});
-
-const adminRequest = (body) => ({
-  requestId: 'test-preferences',
-  body,
-  query: {},
-  admin: { admin_id: ADMIN_ID, role: 'ADMIN' },
 });
 
 const runGet = async () => {
@@ -116,10 +105,6 @@ test.before(async () => {
 
 test.after(async () => {
   await pool.query(
-    `DELETE FROM notifications
-      WHERE type = 'ANNOUNCEMENT' AND title LIKE 'Preference probe%'`
-  );
-  await pool.query(
     `DELETE FROM notification_preferences WHERE resident_id = ANY($1::varchar[])`,
     [[RESIDENT_A, RESIDENT_B]]
   );
@@ -144,7 +129,6 @@ test('a resident with no stored row gets every category enabled', async () => {
 
   const preferences = res.body.preferences;
   assert.equal(preferences.masterEnabled, true);
-  assert.equal(preferences.cenroAnnouncements, true);
   assert.equal(preferences.reportCompleted, true);
   assert.equal(preferences.securityAlerts, true);
   assert.equal(preferences.soundEnabled, true);
@@ -152,22 +136,22 @@ test('a resident with no stored row gets every category enabled', async () => {
 });
 
 test('a stored choice is read back', async () => {
-  const write = await runPut({ cenroAnnouncements: false });
+  const write = await runPut({ reportCompleted: false });
   assert.equal(write.status, 200);
-  assert.equal(write.res.body.preferences.cenroAnnouncements, false);
+  assert.equal(write.res.body.preferences.reportCompleted, false);
 
   const read = await runGet();
-  assert.equal(read.res.body.preferences.cenroAnnouncements, false);
+  assert.equal(read.res.body.preferences.reportCompleted, false);
 });
 
 test('an unspecified field keeps its stored value', async () => {
   await runPut({ reportDenied: false });
 
-  // Only announcements is sent, so the denied toggle must not be reset.
-  const write = await runPut({ cenroAnnouncements: true });
+  // Only reportCompleted is sent, so the denied toggle must not be reset.
+  const write = await runPut({ reportCompleted: true });
   assert.equal(write.status, 200);
   assert.equal(write.res.body.preferences.reportDenied, false);
-  assert.equal(write.res.body.preferences.cenroAnnouncements, true);
+  assert.equal(write.res.body.preferences.reportCompleted, true);
 });
 
 test('an unknown field is rejected rather than silently stored', async () => {
@@ -180,7 +164,7 @@ test('an unknown field is rejected rather than silently stored', async () => {
 test('a non-boolean value is rejected instead of coerced', async () => {
   // Coercing here would be how a malformed client silently turns notifications
   // off, so it has to fail loudly.
-  const { status, error } = await runPut({ cenroAnnouncements: 'false' });
+  const { status, error } = await runPut({ reportCompleted: 'false' });
 
   assert.equal(status, 400);
   assert.match(error.message, /true or false/);
@@ -197,152 +181,10 @@ test('an empty body is refused rather than treated as a reset', async () => {
 });
 
 test('snake_case from the database round-trips', async () => {
-  const { status, res } = await runPut({ cenro_announcements: false });
+  const { status, res } = await runPut({ report_completed: false });
 
   assert.equal(status, 200);
-  assert.equal(res.body.preferences.cenroAnnouncements, false);
-});
-
-test('a muted resident is not a push target, and an unstored one still is', async () => {
-  await ensureResidents();
-  await pool.query(
-    `DELETE FROM notification_preferences WHERE resident_id = ANY($1::varchar[])`,
-    [[RESIDENT_A, RESIDENT_B]]
-  );
-
-  // B has no row at all and must fail open: no row must never mean silence.
-  await pool.query(
-    `INSERT INTO notification_preferences (resident_id, cenro_announcements)
-     VALUES ($1, false)`,
-    [RESIDENT_A]
-  );
-
-  const audience = await notificationPreferenceRepository.findAnnouncementAudience();
-  const byResident = new Map(audience.map((t) => [t.residentId, t]));
-
-  assert.equal(byResident.get(RESIDENT_A)?.pushEnabled, false, 'muted is excluded');
-  assert.equal(byResident.get(RESIDENT_B)?.pushEnabled, true, 'no row fails open');
-});
-
-test('a resident with no device token is still in the audience', async () => {
-  await ensureResidents();
-  // C has no FCM token, as a resident who never granted the permission would.
-  await pool.query(
-    `INSERT INTO residents (
-       resident_id, username, first_name, last_name, password_hash, role, status, fcm_token
-     ) VALUES ($1, $2, 'P', 'P', 'h', 'RESIDENT', 'AVAILABLE', NULL)
-     ON CONFLICT (resident_id) DO UPDATE SET fcm_token = NULL`,
-    [RESIDENT_C, 'pref_c_probe']
-  );
-
-  try {
-    const audience = await notificationPreferenceRepository.findAnnouncementAudience();
-    const found = audience.find((t) => t.residentId === RESIDENT_C);
-
-    // Present, so a row is still written for them; only the push is impossible.
-    assert.ok(found, 'a token-less resident is still notified in-app');
-    assert.equal(found.token, null);
-    assert.equal(found.pushEnabled, false);
-  } finally {
-    await pool.query('DELETE FROM residents WHERE resident_id = $1', [RESIDENT_C]);
-  }
-});
-
-test('a paused account is not in the audience at all', async () => {
-  await pool.query(
-    `INSERT INTO residents (
-       resident_id, username, first_name, last_name, password_hash, role, status, fcm_token
-     ) VALUES ($1, $2, 'P', 'P', 'h', 'RESIDENT', 'DISABLED', $3)
-     ON CONFLICT (resident_id) DO UPDATE SET status = 'DISABLED'`,
-    [RESIDENT_C, 'pref_c_probe', 'token-for-preference-test-resident-c-000000000000']
-  );
-
-  try {
-    const audience = await notificationPreferenceRepository.findAnnouncementAudience();
-    assert.equal(
-      audience.some((t) => t.residentId === RESIDENT_C),
-      false,
-      'someone who cannot sign in is not notified'
-    );
-  } finally {
-    await pool.query('DELETE FROM residents WHERE resident_id = $1', [RESIDENT_C]);
-  }
-});
-
-test('the master switch also suppresses announcements', async () => {
-  await ensureResidents();
-  await pool.query(
-    `INSERT INTO notification_preferences (resident_id, master_enabled, cenro_announcements)
-     VALUES ($1, false, true)
-     ON CONFLICT (resident_id) DO UPDATE SET master_enabled = false`,
-    [RESIDENT_A]
-  );
-
-  const audience = await notificationPreferenceRepository.findAnnouncementAudience();
-  const found = audience.find((t) => t.residentId === RESIDENT_A);
-  assert.equal(found?.pushEnabled, false);
-
-  await pool.query(
-    `UPDATE notification_preferences SET master_enabled = true WHERE resident_id = $1`,
-    [RESIDENT_A]
-  );
-});
-
-test('a muted resident still receives the in-app notification row', async () => {
-  await ensureResidents();
-  // Muted means no buzz, not no content: the announcement must still land in
-  // their feed and Alerts list.
-  await pool.query(
-    `INSERT INTO notification_preferences (resident_id, master_enabled, cenro_announcements)
-     VALUES ($1, false, false)
-     ON CONFLICT (resident_id) DO UPDATE
-       SET master_enabled = false, cenro_announcements = false`,
-    [RESIDENT_A]
-  );
-
-  const res = createResponse();
-  let forwarded = null;
-  await announcementController.createAnnouncement(
-    adminRequest({
-      title: 'Preference probe muted',
-      message: 'Published while this resident has announcements muted.',
-      audience: 'All Residents',
-      priority: 'Normal',
-    }),
-    res,
-    (e) => { forwarded = e; }
-  );
-
-  assert.equal(forwarded, null);
-  assert.equal(res.statusCode, 201);
-
-  const row = await pool.query(
-    `SELECT * FROM notifications
-      WHERE resident_id = $1 AND type = 'ANNOUNCEMENT'
-        AND title = 'Preference probe muted'
-      ORDER BY notification_id DESC LIMIT 1`,
-    [RESIDENT_A]
-  );
-
-  assert.equal(row.rows.length, 1, 'the muted resident still has the notification row');
-  assert.equal(row.rows[0].report_id, null);
-
-  await pool.query('DELETE FROM notifications WHERE notification_id = $1', [
-    row.rows[0].notification_id,
-  ]);
-});
-
-test('the broadcast budget is a positive, bounded value', () => {
-  // The whole point is that publishing cannot outrun its request, so a
-  // non-positive or absurd budget would defeat it silently.
-  assert.equal(typeof fcmService.RESIDENT_BROADCAST_DEADLINE_MS, 'number');
-  assert.ok(fcmService.RESIDENT_BROADCAST_DEADLINE_MS > 0);
-  assert.ok(fcmService.RESIDENT_BROADCAST_DEADLINE_MS <= 60000);
-  assert.ok(fcmService.RESIDENT_SEND_TIMEOUT_MS > 0);
-  assert.ok(
-    fcmService.RESIDENT_SEND_TIMEOUT_MS <= fcmService.RESIDENT_BROADCAST_DEADLINE_MS,
-    'a single send may not be able to consume the entire budget'
-  );
+  assert.equal(res.body.preferences.reportCompleted, false);
 });
 
 test('the batch insert writes one row per resident', async () => {
@@ -351,7 +193,7 @@ test('the batch insert writes one row per resident', async () => {
     reportId: null,
     title: 'Preference probe batch',
     message: 'Batch write probe.',
-    type: 'ANNOUNCEMENT',
+    type: 'REPORT_COMPLETED',
   });
 
   assert.equal(rows.length, 2, 'both residents are written');
@@ -370,7 +212,7 @@ test('an empty recipient list is a no-op rather than a bad query', async () => {
     reportId: null,
     title: 'Preference probe empty',
     message: 'Nobody to write for.',
-    type: 'ANNOUNCEMENT',
+    type: 'REPORT_COMPLETED',
   });
 
   assert.deepEqual(rows, []);
@@ -431,8 +273,8 @@ test('allowsPush maps each report type to the toggle that governs it', () => {
   assert.equal(allowed({ reportStatusUpdates: false }, 'PERSONNEL_ASSIGNED'), false);
   assert.equal(allowed({ reportStatusUpdates: false }, 'ADMIN_RESPONSE_UPDATED'), false);
 
-  assert.equal(allowed({ cenroAnnouncements: false }, 'REPORT_COMPLETED'), true,
-    'muting announcements must not silence report updates');
+  assert.equal(allowed({ reportStatusUpdates: false }, 'REPORT_COMPLETED'), true,
+    'muting one category must not silence another category');
 });
 
 test('allowsPush fails open for unknown types, null, and the master switch', () => {
@@ -441,10 +283,10 @@ test('allowsPush fails open for unknown types, null, and the master switch', () 
   // An unrecognised type is never silently swallowed by an unrelated toggle.
   assert.equal(notificationPreferenceRepository.allowsPush(allOn, 'SOMETHING_NEW'), true);
   // A missing record must not silence an emergency notice.
-  assert.equal(notificationPreferenceRepository.allowsPush(null, 'ANNOUNCEMENT'), true);
+  assert.equal(notificationPreferenceRepository.allowsPush(null, 'REPORT_COMPLETED'), true);
   // The master switch still overrides everything.
   assert.equal(
-    notificationPreferenceRepository.allowsPush({ ...allOn, masterEnabled: false }, 'ANNOUNCEMENT'),
+    notificationPreferenceRepository.allowsPush({ ...allOn, masterEnabled: false }, 'REPORT_COMPLETED'),
     false
   );
   // securityAlerts is deliberately not wired to any type yet.

@@ -4,8 +4,6 @@ const assert = require('node:assert/strict');
 const { pool } = require('../src/config/db');
 const adminNotificationPreferenceRepository = require('../src/modules/notifications/adminNotificationPreferenceRepository');
 const notificationController = require('../src/modules/notifications/notificationController');
-const announcementController = require('../src/modules/announcements/announcementController');
-const announcementRepository = require('../src/modules/announcements/announcementRepository');
 
 const ADMIN_ID = 'ADM-PREF-TEST';
 const ADMIN_ALT = 'ADM-PREF-TEST-ALT';
@@ -60,21 +58,6 @@ const runPut = async (body) => {
   return { res, error: forwarded, status: resolveStatus(res, forwarded) };
 };
 
-const runDelete = async (announcementId) => {
-  const res = createResponse();
-  let forwarded = null;
-  await announcementController.deleteAnnouncement(
-    {
-      requestId: 'test-announcement-delete',
-      params: { announcementId },
-      admin: { admin_id: ADMIN_ID, role: 'ADMIN' },
-    },
-    res,
-    (e) => { forwarded = e; }
-  );
-  return { res, error: forwarded, status: resolveStatus(res, forwarded) };
-};
-
 const ensureAdmins = async () => {
   for (const [adminId, username, token] of [
     [ADMIN_ID, 'adm_pref_probe', FCM_TOKEN],
@@ -110,10 +93,6 @@ test.before(async () => {
 });
 
 test.after(async () => {
-  await pool.query(
-    `DELETE FROM announcements WHERE created_by_admin_id = $1`,
-    [ADMIN_ID]
-  );
   await pool.query(
     `DELETE FROM admin_notification_preferences WHERE admin_id = ANY($1::varchar[])`,
     [[ADMIN_ID, ADMIN_ALT]]
@@ -207,54 +186,4 @@ test('a muted administrator is excluded from the broadcast targets', async () =>
 
   assert.equal(byAdmin.get(ADMIN_ID)?.pushEnabled, false, 'muted is excluded');
   assert.equal(byAdmin.get(ADMIN_ALT)?.pushEnabled, true, 'no row fails open');
-});
-
-// --- announcement deletion ------------------------------------------------
-
-test('an administrator can permanently delete an announcement', async () => {
-  const res = createResponse();
-  let forwarded = null;
-  await announcementController.createAnnouncement(
-    {
-      requestId: 'test-delete',
-      body: {
-        title: 'Delete probe',
-        message: 'Published so it can be taken back down.',
-        audience: 'All Residents',
-        priority: 'Normal',
-        // No timer, which is exactly the case that previously had no way out.
-        expiresInDays: 0,
-      },
-      query: {},
-      admin: { admin_id: ADMIN_ID, role: 'ADMIN' },
-    },
-    res,
-    (e) => { forwarded = e; }
-  );
-
-  assert.equal(forwarded, null);
-  const announcementId = res.body.announcement.announcementId;
-  assert.ok(announcementRepository.findById(announcementId));
-
-  const removal = await runDelete(announcementId);
-  assert.equal(removal.status, 200);
-  assert.equal(removal.res.body.deleted, true);
-
-  // Gone at the storage layer, not merely hidden from a read.
-  const row = await pool.query('SELECT * FROM announcements WHERE id = $1', [announcementId]);
-  assert.equal(row.rows.length, 0);
-});
-
-test('deleting an unknown announcement is a 404', async () => {
-  const { status, error } = await runDelete('999999999');
-  assert.equal(status, 404);
-  assert.match(error.message, /not found/i);
-});
-
-test('a malformed announcement id is a 400, not a database error', async () => {
-  // Without this guard the cast reaches Postgres and surfaces as a 500.
-  for (const bad of ['abc', '1;DROP TABLE announcements', '-1', '']) {
-    const { status } = await runDelete(bad);
-    assert.equal(status, 400, `expected 400 for "${bad}"`);
-  }
 });

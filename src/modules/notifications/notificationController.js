@@ -24,7 +24,6 @@ const RESIDENT_PREFERENCE_FIELDS = Object.freeze({
   reportStatusUpdates: 'boolean',
   reportCompleted: 'boolean',
   reportDenied: 'boolean',
-  cenroAnnouncements: 'boolean',
   securityAlerts: 'boolean',
   soundEnabled: 'boolean',
   vibrationEnabled: 'boolean',
@@ -43,7 +42,6 @@ const ADMIN_PREFERENCE_FIELDS = Object.freeze({
   reportStatusUpdates: 'boolean',
   reportCompleted: 'boolean',
   reportDenied: 'boolean',
-  cenroAnnouncements: 'boolean',
   securityAlerts: 'boolean',
   highPriorityReports: 'boolean',
   personnelAccepted: 'boolean',
@@ -140,7 +138,7 @@ const getPreferences = async (req, res, next) => {
  * Replaces the signed-in resident's stored choices.
  *
  * <p>Unspecified fields keep their stored value, so a client that only tracks
- * announcements does not reset the categories it never knew about.
+ * one category does not reset the categories it never knew about.
  */
 const updatePreferences = async (req, res, next) => {
   try {
